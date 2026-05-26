@@ -15186,7 +15186,7 @@ var Subdivider = class {
 		const flattened = this._vertexBuffer;
 		for (let i = 0; i < flattened.length; i += 2) {
 			const vy = flattened[i + 1];
-			if (vy === -32768) flattened[i + 1] = NORTH_POLE_Y + 1;
+			if (vy === -32768) flattened[i + 1] = -32767;
 			if (vy === 32767) flattened[i + 1] = SOUTH_POLE_Y - 1;
 		}
 	}
@@ -16460,15 +16460,17 @@ const ARRAY_TYPES = [
 	Float64Array
 ];
 /** @typedef {Int8ArrayConstructor | Uint8ArrayConstructor | Uint8ClampedArrayConstructor | Int16ArrayConstructor | Uint16ArrayConstructor | Int32ArrayConstructor | Uint32ArrayConstructor | Float32ArrayConstructor | Float64ArrayConstructor} TypedArrayConstructor */
+/** @typedef {Int8Array | Uint8Array | Uint8ClampedArray | Int16Array | Uint16Array | Int32Array | Uint32Array | Float32Array | Float64Array} TypedArray */
 const VERSION = 1;
 const HEADER_SIZE = 8;
+const STACK = new Uint32Array(96);
 var KDBush = class KDBush {
 	/**
 	* Creates an index from raw `ArrayBuffer` data.
-	* @param {ArrayBuffer} data
+	* @param {ArrayBufferLike} data
 	*/
 	static from(data) {
-		if (!(data instanceof ArrayBuffer)) throw new Error("Data must be an instance of ArrayBuffer.");
+		if (!data || data.byteLength === void 0 || data.buffer) throw new Error("Data must be an instance of ArrayBuffer or SharedArrayBuffer.");
 		const [magic, versionAndType] = new Uint8Array(data, 0, 2);
 		if (magic !== 219) throw new Error("Data does not appear to be in a KDBush format.");
 		const version = versionAndType >> 4;
@@ -16477,17 +16479,18 @@ var KDBush = class KDBush {
 		if (!ArrayType) throw new Error("Unrecognized array type.");
 		const [nodeSize] = new Uint16Array(data, 2, 1);
 		const [numItems] = new Uint32Array(data, 4, 1);
-		return new KDBush(numItems, nodeSize, ArrayType, data);
+		return new KDBush(numItems, nodeSize, ArrayType, void 0, data);
 	}
 	/**
 	* Creates an index that will hold a given number of items.
 	* @param {number} numItems
 	* @param {number} [nodeSize=64] Size of the KD-tree node (64 by default).
 	* @param {TypedArrayConstructor} [ArrayType=Float64Array] The array type used for coordinates storage (`Float64Array` by default).
-	* @param {ArrayBuffer} [data] (For internal use only)
+	* @param {ArrayBufferConstructor | SharedArrayBufferConstructor} [ArrayBufferType=ArrayBuffer] The array buffer type used for storage (`ArrayBuffer` by default).
+	* @param {ArrayBufferLike} [data] (For internal use only)
 	*/
-	constructor(numItems, nodeSize = 64, ArrayType = Float64Array, data) {
-		if (isNaN(numItems) || numItems < 0) throw new Error(`Unpexpected numItems value: ${numItems}.`);
+	constructor(numItems, nodeSize = 64, ArrayType = Float64Array, ArrayBufferType = ArrayBuffer, data) {
+		if (isNaN(numItems) || numItems < 0) throw new Error(`Unexpected numItems value: ${numItems}.`);
 		this.numItems = +numItems;
 		this.nodeSize = Math.min(Math.max(+nodeSize, 2), 65535);
 		this.ArrayType = ArrayType;
@@ -16497,21 +16500,21 @@ var KDBush = class KDBush {
 		const idsByteSize = numItems * this.IndexArrayType.BYTES_PER_ELEMENT;
 		const padCoords = (8 - idsByteSize % 8) % 8;
 		if (arrayTypeIndex < 0) throw new Error(`Unexpected typed array class: ${ArrayType}.`);
-		if (data && data instanceof ArrayBuffer) {
+		if (data) {
 			this.data = data;
-			this.ids = new this.IndexArrayType(this.data, HEADER_SIZE, numItems);
-			this.coords = new this.ArrayType(this.data, HEADER_SIZE + idsByteSize + padCoords, numItems * 2);
+			this.ids = new this.IndexArrayType(data, HEADER_SIZE, numItems);
+			this.coords = new ArrayType(data, HEADER_SIZE + idsByteSize + padCoords, numItems * 2);
 			this._pos = numItems * 2;
 			this._finished = true;
 		} else {
-			this.data = new ArrayBuffer(HEADER_SIZE + coordsByteSize + idsByteSize + padCoords);
-			this.ids = new this.IndexArrayType(this.data, HEADER_SIZE, numItems);
-			this.coords = new this.ArrayType(this.data, HEADER_SIZE + idsByteSize + padCoords, numItems * 2);
+			const data = this.data = new ArrayBufferType(HEADER_SIZE + coordsByteSize + idsByteSize + padCoords);
+			this.ids = new this.IndexArrayType(data, HEADER_SIZE, numItems);
+			this.coords = new ArrayType(data, HEADER_SIZE + idsByteSize + padCoords, numItems * 2);
 			this._pos = 0;
 			this._finished = false;
-			new Uint8Array(this.data, 0, 2).set([219, (VERSION << 4) + arrayTypeIndex]);
-			new Uint16Array(this.data, 2, 1)[0] = nodeSize;
-			new Uint32Array(this.data, 4, 1)[0] = numItems;
+			new Uint8Array(data, 0, 2).set([219, (VERSION << 4) + arrayTypeIndex]);
+			new Uint16Array(data, 2, 1)[0] = nodeSize;
+			new Uint32Array(data, 4, 1)[0] = numItems;
 		}
 	}
 	/**
@@ -16548,16 +16551,15 @@ var KDBush = class KDBush {
 	range(minX, minY, maxX, maxY) {
 		if (!this._finished) throw new Error("Data not yet indexed - call index.finish().");
 		const { ids, coords, nodeSize } = this;
-		const stack = [
-			0,
-			ids.length - 1,
-			0
-		];
+		STACK[0] = 0;
+		STACK[1] = ids.length - 1;
+		STACK[2] = 0;
+		let sp = 3;
 		const result = [];
-		while (stack.length) {
-			const axis = stack.pop() || 0;
-			const right = stack.pop() || 0;
-			const left = stack.pop() || 0;
+		while (sp > 0) {
+			const axis = STACK[--sp];
+			const right = STACK[--sp];
+			const left = STACK[--sp];
 			if (right - left <= nodeSize) {
 				for (let i = left; i <= right; i++) {
 					const x = coords[2 * i];
@@ -16571,14 +16573,14 @@ var KDBush = class KDBush {
 			const y = coords[2 * m + 1];
 			if (x >= minX && x <= maxX && y >= minY && y <= maxY) result.push(ids[m]);
 			if (axis === 0 ? minX <= x : minY <= y) {
-				stack.push(left);
-				stack.push(m - 1);
-				stack.push(1 - axis);
+				STACK[sp++] = left;
+				STACK[sp++] = m - 1;
+				STACK[sp++] = 1 - axis;
 			}
 			if (axis === 0 ? maxX >= x : maxY >= y) {
-				stack.push(m + 1);
-				stack.push(right);
-				stack.push(1 - axis);
+				STACK[sp++] = m + 1;
+				STACK[sp++] = right;
+				STACK[sp++] = 1 - axis;
 			}
 		}
 		return result;
@@ -16591,44 +16593,59 @@ var KDBush = class KDBush {
 	* @returns {number[]} An array of indices correponding to the found items.
 	*/
 	within(qx, qy, r) {
+		const result = [];
+		this.withinInto(qx, qy, r, result);
+		return result;
+	}
+	/**
+	* Search the index for items within a given radius, writing matching ids into `out`
+	* via indexed assignment (`out[i] = id`). Accepts any indexed-writable container —
+	* a typed array sized to the expected upper bound (allocation-free, fast) or a plain
+	* `Array` (which will grow as needed). Returns the number of matches written.
+	* @param {number} qx
+	* @param {number} qy
+	* @param {number} r Query radius.
+	* @param {number[] | TypedArray} out Container to write matching ids into.
+	* @returns {number} The number of matches written to `out`.
+	*/
+	withinInto(qx, qy, r, out) {
 		if (!this._finished) throw new Error("Data not yet indexed - call index.finish().");
 		const { ids, coords, nodeSize } = this;
-		const stack = [
-			0,
-			ids.length - 1,
-			0
-		];
-		const result = [];
+		STACK[0] = 0;
+		STACK[1] = ids.length - 1;
+		STACK[2] = 0;
+		let sp = 3;
+		let count = 0;
 		const r2 = r * r;
-		while (stack.length) {
-			const axis = stack.pop() || 0;
-			const right = stack.pop() || 0;
-			const left = stack.pop() || 0;
+		while (sp > 0) {
+			const axis = STACK[--sp];
+			const right = STACK[--sp];
+			const left = STACK[--sp];
 			if (right - left <= nodeSize) {
-				for (let i = left; i <= right; i++) if (sqDist(coords[2 * i], coords[2 * i + 1], qx, qy) <= r2) result.push(ids[i]);
+				for (let i = left; i <= right; i++) if (sqDist(coords[2 * i], coords[2 * i + 1], qx, qy) <= r2) out[count++] = ids[i];
 				continue;
 			}
 			const m = left + right >> 1;
 			const x = coords[2 * m];
 			const y = coords[2 * m + 1];
-			if (sqDist(x, y, qx, qy) <= r2) result.push(ids[m]);
+			if (sqDist(x, y, qx, qy) <= r2) out[count++] = ids[m];
 			if (axis === 0 ? qx - r <= x : qy - r <= y) {
-				stack.push(left);
-				stack.push(m - 1);
-				stack.push(1 - axis);
+				STACK[sp++] = left;
+				STACK[sp++] = m - 1;
+				STACK[sp++] = 1 - axis;
 			}
 			if (axis === 0 ? qx + r >= x : qy + r >= y) {
-				stack.push(m + 1);
-				stack.push(right);
-				stack.push(1 - axis);
+				STACK[sp++] = m + 1;
+				STACK[sp++] = right;
+				STACK[sp++] = 1 - axis;
 			}
 		}
-		return result;
+		return count;
 	}
 };
 /**
 * @param {Uint16Array | Uint32Array} ids
-* @param {InstanceType<TypedArrayConstructor>} coords
+* @param {TypedArray} coords
 * @param {number} nodeSize
 * @param {number} left
 * @param {number} right
@@ -16645,7 +16662,7 @@ function sort(ids, coords, nodeSize, left, right, axis) {
 * Custom Floyd-Rivest selection algorithm: sort ids and coords so that
 * [left..k-1] items are smaller than k-th item (on either x or y axis)
 * @param {Uint16Array | Uint32Array} ids
-* @param {InstanceType<TypedArrayConstructor>} coords
+* @param {TypedArray} coords
 * @param {number} k
 * @param {number} left
 * @param {number} right
@@ -16684,7 +16701,7 @@ function select(ids, coords, k, left, right, axis) {
 }
 /**
 * @param {Uint16Array | Uint32Array} ids
-* @param {InstanceType<TypedArrayConstructor>} coords
+* @param {TypedArray} coords
 * @param {number} i
 * @param {number} j
 */
@@ -16694,7 +16711,7 @@ function swapItem(ids, coords, i, j) {
 	swap(coords, 2 * i + 1, 2 * j + 1);
 }
 /**
-* @param {InstanceType<TypedArrayConstructor>} arr
+* @param {TypedArray} arr
 * @param {number} i
 * @param {number} j
 */
@@ -18495,7 +18512,7 @@ var LineBucket = class {
 		while (len >= 2 && vertices[len - 1].equals(vertices[len - 2])) len--;
 		let first = 0;
 		while (first < len - 1 && vertices[first].equals(vertices[first + 1])) first++;
-		if (len < (isPolygon ? 3 : 2)) return;
+		if (len - first < (isPolygon ? 3 : 2)) return;
 		if (join === "bevel") miterLimit = 1.05;
 		const sharpCornerOffset = this.overscaling <= 16 ? SHARP_CORNER_OFFSET * EXTENT$1 / (512 * this.overscaling) : 0;
 		const segment = this.segments.prepareSegment(len * 10, this.layoutVertexArray, this.indexArray);
@@ -19471,7 +19488,7 @@ var TaggedString = class TaggedString {
 		}
 		const nextImageSectionCharCode = this.getNextImageSectionCharCode();
 		if (!nextImageSectionCharCode) {
-			warnOnce(`Reached maximum number of images ${PUAend - PUAbegin + 2}`);
+			warnOnce(`Reached maximum number of images 6401`);
 			return;
 		}
 		this.text += String.fromCharCode(nextImageSectionCharCode);
@@ -23080,7 +23097,7 @@ function fastUnpack256_Generic(inValues, inPos, out, outPos, bitWidth) {
 //#endregion
 //#region node_modules/@maplibre/mlt/dist/decoding/fastPforDecoder.js
 const MAX_BIT_WIDTH = 32;
-const BIT_WIDTH_SLOTS = MAX_BIT_WIDTH + 1;
+const BIT_WIDTH_SLOTS = 33;
 const PAGE_SIZE = normalizePageSize(DEFAULT_PAGE_SIZE);
 const BYTE_CONTAINER_SIZE = 3 * PAGE_SIZE / 256 + PAGE_SIZE | 0;
 /**
@@ -24268,7 +24285,10 @@ function decodeSignedConstInt32Stream(data, offset, streamMetadata) {
 }
 function decodeUnsignedConstInt32Stream(data, offset, streamMetadata) {
 	const values = decodePhysicalLevelTechnique(data, offset, streamMetadata);
-	if (values.length === 1) return values[0];
+	if (values.length === 1) {
+		if (streamMetadata.logicalLevelTechnique1 === LogicalLevelTechnique.DELTA) return decodeZigZagInt32Value(values[0]);
+		return values[0];
+	}
 	return decodeUnsignedConstRleInt32(values);
 }
 function decodeSequenceInt32Stream(data, offset, streamMetadata) {
@@ -24551,161 +24571,164 @@ function convertGeometryVector(geometryVector) {
 	const nonOffset = !vertexOffsets || vertexOffsets.length === 0;
 	const containsPolygon = geometryVector.containsPolygonGeometry();
 	const vertexBuffer = geometryVector.vertexBuffer;
-	for (let i = 0; i < geometryVector.numGeometries; i++) switch (geometryVector.geometryType(i)) {
-		case GEOMETRY_TYPE.POINT:
-			{
-				let x;
-				let y;
-				if (nonOffset) {
-					x = vertexBuffer[vertexBufferOffset++];
-					y = vertexBuffer[vertexBufferOffset++];
-				} else if (geometryVector.vertexBufferType === VertexBufferType.MORTON) {
-					const mortonCode = vertexBuffer[vertexOffsets[vertexOffsetsOffset++]];
-					const vertex = decodeZOrderCurve(mortonCode, mortonSettings.numBits, mortonSettings.coordinateShift);
-					x = vertex.x;
-					y = vertex.y;
-				} else {
-					const offset = vertexOffsets[vertexOffsetsOffset++] * 2;
-					x = vertexBuffer[offset];
-					y = vertexBuffer[offset + 1];
-				}
-				geometries[geometryCounter++] = [[new Point(x, y)]];
-				if (geometryOffsets) geometryOffsetsCounter++;
-				if (partOffsets) partOffsetCounter++;
-				if (ringOffsets) ringOffsetsCounter++;
-			}
-			break;
-		case GEOMETRY_TYPE.MULTIPOINT:
-			{
-				const numPoints = geometryOffsets[geometryOffsetsCounter] - geometryOffsets[geometryOffsetsCounter - 1];
-				geometryOffsetsCounter++;
-				const points = new Array(numPoints);
-				if (nonOffset) for (let j = 0; j < numPoints; j++) {
-					const x = vertexBuffer[vertexBufferOffset++];
-					const y = vertexBuffer[vertexBufferOffset++];
-					points[j] = new Point(x, y);
-				}
-				else for (let j = 0; j < numPoints; j++) {
-					const offset = vertexOffsets[vertexOffsetsOffset++] * 2;
-					const x = vertexBuffer[offset];
-					const y = vertexBuffer[offset + 1];
-					points[j] = new Point(x, y);
-				}
-				geometries[geometryCounter++] = points.map((point) => [point]);
-				partOffsetCounter += numPoints;
-				ringOffsetsCounter += numPoints;
-			}
-			break;
-		case GEOMETRY_TYPE.LINESTRING:
-			{
-				let numVertices;
-				if (containsPolygon) {
-					numVertices = ringOffsets[ringOffsetsCounter] - ringOffsets[ringOffsetsCounter - 1];
-					ringOffsetsCounter++;
-				} else numVertices = partOffsets[partOffsetCounter] - partOffsets[partOffsetCounter - 1];
-				partOffsetCounter++;
-				let vertices;
-				if (nonOffset) {
-					vertices = getLineStringOrRing(vertexBuffer, vertexBufferOffset, numVertices, false);
-					vertexBufferOffset += numVertices * 2;
-				} else {
-					vertices = decodeDictionaryEncodedLineStringOrRing(geometryVector.vertexBufferType, vertexBuffer, vertexOffsets, vertexOffsetsOffset, numVertices, false, mortonSettings);
-					vertexOffsetsOffset += numVertices;
-				}
-				geometries[geometryCounter++] = [vertices];
-				if (geometryOffsets) geometryOffsetsCounter++;
-			}
-			break;
-		case GEOMETRY_TYPE.POLYGON:
-			{
-				const numRings = partOffsets[partOffsetCounter] - partOffsets[partOffsetCounter - 1];
-				partOffsetCounter++;
-				const rings = new Array(numRings - 1);
-				let shell;
-				let numVertices = ringOffsets[ringOffsetsCounter] - ringOffsets[ringOffsetsCounter - 1];
-				ringOffsetsCounter++;
-				if (nonOffset) {
-					shell = getLineStringOrRing(vertexBuffer, vertexBufferOffset, numVertices, true);
-					vertexBufferOffset += numVertices * 2;
-					for (let j = 0; j < rings.length; j++) {
-						numVertices = ringOffsets[ringOffsetsCounter] - ringOffsets[ringOffsetsCounter - 1];
-						ringOffsetsCounter++;
-						rings[j] = getLineStringOrRing(vertexBuffer, vertexBufferOffset, numVertices, true);
-						vertexBufferOffset += numVertices * 2;
+	for (let i = 0; i < geometryVector.numGeometries; i++) {
+		const geometryType = geometryVector.geometryType(i);
+		switch (geometryType) {
+			case GEOMETRY_TYPE.POINT:
+				{
+					let x;
+					let y;
+					if (nonOffset) {
+						x = vertexBuffer[vertexBufferOffset++];
+						y = vertexBuffer[vertexBufferOffset++];
+					} else if (geometryVector.vertexBufferType === VertexBufferType.MORTON) {
+						const mortonCode = vertexBuffer[vertexOffsets[vertexOffsetsOffset++]];
+						const vertex = decodeZOrderCurve(mortonCode, mortonSettings.numBits, mortonSettings.coordinateShift);
+						x = vertex.x;
+						y = vertex.y;
+					} else {
+						const offset = vertexOffsets[vertexOffsetsOffset++] * 2;
+						x = vertexBuffer[offset];
+						y = vertexBuffer[offset + 1];
 					}
-				} else {
-					shell = decodeDictionaryEncodedLineStringOrRing(geometryVector.vertexBufferType, vertexBuffer, vertexOffsets, vertexOffsetsOffset, numVertices, true, mortonSettings);
-					vertexOffsetsOffset += numVertices;
-					for (let j = 0; j < rings.length; j++) {
-						numVertices = ringOffsets[ringOffsetsCounter] - ringOffsets[ringOffsetsCounter - 1];
-						ringOffsetsCounter++;
-						rings[j] = decodeDictionaryEncodedLineStringOrRing(geometryVector.vertexBufferType, vertexBuffer, vertexOffsets, vertexOffsetsOffset, numVertices, true, mortonSettings);
-						vertexOffsetsOffset += numVertices;
-					}
+					geometries[geometryCounter++] = [[new Point(x, y)]];
+					if (geometryOffsets) geometryOffsetsCounter++;
+					if (partOffsets) partOffsetCounter++;
+					if (ringOffsets) ringOffsetsCounter++;
 				}
-				geometries[geometryCounter++] = [shell].concat(rings);
-				if (geometryOffsets) geometryOffsetsCounter++;
-			}
-			break;
-		case GEOMETRY_TYPE.MULTILINESTRING:
-			{
-				const numLineStrings = geometryOffsets[geometryOffsetsCounter] - geometryOffsets[geometryOffsetsCounter - 1];
-				geometryOffsetsCounter++;
-				const lineStrings = new Array(numLineStrings);
-				for (let j = 0; j < numLineStrings; j++) {
+				break;
+			case GEOMETRY_TYPE.MULTIPOINT:
+				{
+					const numPoints = geometryOffsets[geometryOffsetsCounter] - geometryOffsets[geometryOffsetsCounter - 1];
+					geometryOffsetsCounter++;
+					const points = new Array(numPoints);
+					if (nonOffset) for (let j = 0; j < numPoints; j++) {
+						const x = vertexBuffer[vertexBufferOffset++];
+						const y = vertexBuffer[vertexBufferOffset++];
+						points[j] = new Point(x, y);
+					}
+					else for (let j = 0; j < numPoints; j++) {
+						const offset = vertexOffsets[vertexOffsetsOffset++] * 2;
+						const x = vertexBuffer[offset];
+						const y = vertexBuffer[offset + 1];
+						points[j] = new Point(x, y);
+					}
+					geometries[geometryCounter++] = points.map((point) => [point]);
+					partOffsetCounter += numPoints;
+					ringOffsetsCounter += numPoints;
+				}
+				break;
+			case GEOMETRY_TYPE.LINESTRING:
+				{
 					let numVertices;
 					if (containsPolygon) {
 						numVertices = ringOffsets[ringOffsetsCounter] - ringOffsets[ringOffsetsCounter - 1];
 						ringOffsetsCounter++;
 					} else numVertices = partOffsets[partOffsetCounter] - partOffsets[partOffsetCounter - 1];
 					partOffsetCounter++;
+					let vertices;
 					if (nonOffset) {
-						lineStrings[j] = getLineStringOrRing(vertexBuffer, vertexBufferOffset, numVertices, false);
+						vertices = getLineStringOrRing(vertexBuffer, vertexBufferOffset, numVertices, false);
 						vertexBufferOffset += numVertices * 2;
 					} else {
-						lineStrings[j] = decodeDictionaryEncodedLineStringOrRing(geometryVector.vertexBufferType, vertexBuffer, vertexOffsets, vertexOffsetsOffset, numVertices, false, mortonSettings);
+						vertices = decodeDictionaryEncodedLineStringOrRing(geometryVector.vertexBufferType, vertexBuffer, vertexOffsets, vertexOffsetsOffset, numVertices, false, mortonSettings);
 						vertexOffsetsOffset += numVertices;
 					}
+					geometries[geometryCounter++] = [vertices];
+					if (geometryOffsets) geometryOffsetsCounter++;
 				}
-				geometries[geometryCounter++] = lineStrings;
-			}
-			break;
-		case GEOMETRY_TYPE.MULTIPOLYGON:
-			{
-				const numPolygons = geometryOffsets[geometryOffsetsCounter] - geometryOffsets[geometryOffsetsCounter - 1];
-				geometryOffsetsCounter++;
-				const polygons = new Array(numPolygons);
-				for (let j = 0; j < numPolygons; j++) {
+				break;
+			case GEOMETRY_TYPE.POLYGON:
+				{
 					const numRings = partOffsets[partOffsetCounter] - partOffsets[partOffsetCounter - 1];
 					partOffsetCounter++;
-					let shell;
 					const rings = new Array(numRings - 1);
-					const numVertices = ringOffsets[ringOffsetsCounter] - ringOffsets[ringOffsetsCounter - 1];
+					let shell;
+					let numVertices = ringOffsets[ringOffsetsCounter] - ringOffsets[ringOffsetsCounter - 1];
 					ringOffsetsCounter++;
 					if (nonOffset) {
 						shell = getLineStringOrRing(vertexBuffer, vertexBufferOffset, numVertices, true);
 						vertexBufferOffset += numVertices * 2;
+						for (let j = 0; j < rings.length; j++) {
+							numVertices = ringOffsets[ringOffsetsCounter] - ringOffsets[ringOffsetsCounter - 1];
+							ringOffsetsCounter++;
+							rings[j] = getLineStringOrRing(vertexBuffer, vertexBufferOffset, numVertices, true);
+							vertexBufferOffset += numVertices * 2;
+						}
 					} else {
 						shell = decodeDictionaryEncodedLineStringOrRing(geometryVector.vertexBufferType, vertexBuffer, vertexOffsets, vertexOffsetsOffset, numVertices, true, mortonSettings);
 						vertexOffsetsOffset += numVertices;
-					}
-					for (let k = 0; k < rings.length; k++) {
-						const numRingVertices = ringOffsets[ringOffsetsCounter] - ringOffsets[ringOffsetsCounter - 1];
-						ringOffsetsCounter++;
-						if (nonOffset) {
-							rings[k] = getLineStringOrRing(vertexBuffer, vertexBufferOffset, numRingVertices, true);
-							vertexBufferOffset += numRingVertices * 2;
-						} else {
-							rings[k] = decodeDictionaryEncodedLineStringOrRing(geometryVector.vertexBufferType, vertexBuffer, vertexOffsets, vertexOffsetsOffset, numRingVertices, true, mortonSettings);
-							vertexOffsetsOffset += numRingVertices;
+						for (let j = 0; j < rings.length; j++) {
+							numVertices = ringOffsets[ringOffsetsCounter] - ringOffsets[ringOffsetsCounter - 1];
+							ringOffsetsCounter++;
+							rings[j] = decodeDictionaryEncodedLineStringOrRing(geometryVector.vertexBufferType, vertexBuffer, vertexOffsets, vertexOffsetsOffset, numVertices, true, mortonSettings);
+							vertexOffsetsOffset += numVertices;
 						}
 					}
-					polygons[j] = [shell].concat(rings);
+					geometries[geometryCounter++] = [shell].concat(rings);
+					if (geometryOffsets) geometryOffsetsCounter++;
 				}
-				geometries[geometryCounter++] = polygons.flat();
-			}
-			break;
-		default: throw new Error("The specified geometry type is currently not supported.");
+				break;
+			case GEOMETRY_TYPE.MULTILINESTRING:
+				{
+					const numLineStrings = geometryOffsets[geometryOffsetsCounter] - geometryOffsets[geometryOffsetsCounter - 1];
+					geometryOffsetsCounter++;
+					const lineStrings = new Array(numLineStrings);
+					for (let j = 0; j < numLineStrings; j++) {
+						let numVertices;
+						if (containsPolygon) {
+							numVertices = ringOffsets[ringOffsetsCounter] - ringOffsets[ringOffsetsCounter - 1];
+							ringOffsetsCounter++;
+						} else numVertices = partOffsets[partOffsetCounter] - partOffsets[partOffsetCounter - 1];
+						partOffsetCounter++;
+						if (nonOffset) {
+							lineStrings[j] = getLineStringOrRing(vertexBuffer, vertexBufferOffset, numVertices, false);
+							vertexBufferOffset += numVertices * 2;
+						} else {
+							lineStrings[j] = decodeDictionaryEncodedLineStringOrRing(geometryVector.vertexBufferType, vertexBuffer, vertexOffsets, vertexOffsetsOffset, numVertices, false, mortonSettings);
+							vertexOffsetsOffset += numVertices;
+						}
+					}
+					geometries[geometryCounter++] = lineStrings;
+				}
+				break;
+			case GEOMETRY_TYPE.MULTIPOLYGON:
+				{
+					const numPolygons = geometryOffsets[geometryOffsetsCounter] - geometryOffsets[geometryOffsetsCounter - 1];
+					geometryOffsetsCounter++;
+					const polygons = new Array(numPolygons);
+					for (let j = 0; j < numPolygons; j++) {
+						const numRings = partOffsets[partOffsetCounter] - partOffsets[partOffsetCounter - 1];
+						partOffsetCounter++;
+						let shell;
+						const rings = new Array(numRings - 1);
+						const numVertices = ringOffsets[ringOffsetsCounter] - ringOffsets[ringOffsetsCounter - 1];
+						ringOffsetsCounter++;
+						if (nonOffset) {
+							shell = getLineStringOrRing(vertexBuffer, vertexBufferOffset, numVertices, true);
+							vertexBufferOffset += numVertices * 2;
+						} else {
+							shell = decodeDictionaryEncodedLineStringOrRing(geometryVector.vertexBufferType, vertexBuffer, vertexOffsets, vertexOffsetsOffset, numVertices, true, mortonSettings);
+							vertexOffsetsOffset += numVertices;
+						}
+						for (let k = 0; k < rings.length; k++) {
+							const numRingVertices = ringOffsets[ringOffsetsCounter] - ringOffsets[ringOffsetsCounter - 1];
+							ringOffsetsCounter++;
+							if (nonOffset) {
+								rings[k] = getLineStringOrRing(vertexBuffer, vertexBufferOffset, numRingVertices, true);
+								vertexBufferOffset += numRingVertices * 2;
+							} else {
+								rings[k] = decodeDictionaryEncodedLineStringOrRing(geometryVector.vertexBufferType, vertexBuffer, vertexOffsets, vertexOffsetsOffset, numRingVertices, true, mortonSettings);
+								vertexOffsetsOffset += numRingVertices;
+							}
+						}
+						polygons[j] = [shell].concat(rings);
+					}
+					geometries[geometryCounter++] = polygons.flat();
+				}
+				break;
+			default: throw new Error(`The specified geometry type (${geometryType}) is currently not supported.`);
+		}
 	}
 	return geometries;
 }
@@ -26706,7 +26729,7 @@ function sumWithinRange(ranges, min, max) {
 }
 function stretchZonesToCuts(stretchZones, fixedSize, stretchSize) {
 	const cuts = [{
-		fixed: -border,
+		fixed: -1,
 		stretch: 0
 	}];
 	for (const [c1, c2] of stretchZones) {
@@ -28270,7 +28293,7 @@ function sliceVectorTileLayer(sourceLayer, maxZoomTileID, targetTileID) {
 			point.y = point.y * scale - offsetY;
 		}
 		const buffer = 128;
-		geometry = clipGeometry(geometry, feature.type, -buffer, -buffer, extent + buffer, extent + buffer);
+		geometry = clipGeometry(geometry, feature.type, -128, -128, extent + buffer, extent + buffer);
 		if (geometry.length === 0) continue;
 		featureWrappers.push(new VectorTileFeatureOverzoomed(feature.type, geometry, feature.properties, feature.id, extent));
 	}
