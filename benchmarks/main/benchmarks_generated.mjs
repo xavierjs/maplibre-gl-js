@@ -320,60 +320,40 @@ Point.convert = function(p) {
 	throw new Error("Expected [x, y] or {x, y} point format");
 };
 //#endregion
-//#region src/util/offscreen_canvas_supported.ts
-var import_unitbezier$1 = /* @__PURE__ */ __toESM$1((/* @__PURE__ */ __commonJSMin$1(((exports, module) => {
-	module.exports = UnitBezier;
-	function UnitBezier(p1x, p1y, p2x, p2y) {
-		this.cx = 3 * p1x;
-		this.bx = 3 * (p2x - p1x) - this.cx;
-		this.ax = 1 - this.cx - this.bx;
-		this.cy = 3 * p1y;
-		this.by = 3 * (p2y - p1y) - this.cy;
-		this.ay = 1 - this.cy - this.by;
-		this.p1x = p1x;
-		this.p1y = p1y;
-		this.p2x = p2x;
-		this.p2y = p2y;
-	}
-	UnitBezier.prototype = {
-		sampleCurveX: function(t) {
-			return ((this.ax * t + this.bx) * t + this.cx) * t;
-		},
-		sampleCurveY: function(t) {
-			return ((this.ay * t + this.by) * t + this.cy) * t;
-		},
-		sampleCurveDerivativeX: function(t) {
-			return (3 * this.ax * t + 2 * this.bx) * t + this.cx;
-		},
-		solveCurveX: function(x, epsilon) {
-			if (epsilon === void 0) epsilon = 1e-6;
-			if (x < 0) return 0;
-			if (x > 1) return 1;
-			var t = x;
-			for (var i = 0; i < 8; i++) {
-				var x2 = this.sampleCurveX(t) - x;
-				if (Math.abs(x2) < epsilon) return t;
-				var d2 = this.sampleCurveDerivativeX(t);
-				if (Math.abs(d2) < 1e-6) break;
-				t = t - x2 / d2;
-			}
-			var t0 = 0;
-			var t1 = 1;
-			t = x;
-			for (i = 0; i < 20; i++) {
-				x2 = this.sampleCurveX(t);
-				if (Math.abs(x2 - x) < epsilon) break;
-				if (x > x2) t0 = t;
-				else t1 = t;
-				t = (t1 - t0) * .5 + t0;
-			}
-			return t;
-		},
-		solve: function(x, epsilon) {
-			return this.sampleCurveY(this.solveCurveX(x, epsilon));
+//#region node_modules/@mapbox/unitbezier/index.js
+function unitBezier(p1x, p1y, p2x, p2y) {
+	const cx = 3 * p1x;
+	const bx = 3 * (p2x - p1x) - cx;
+	const ax = 1 - cx - bx;
+	const cy = 3 * p1y;
+	const by = 3 * (p2y - p1y) - cy;
+	const ay = 1 - cy - by;
+	return function solve(x, epsilon = 1e-6) {
+		if (x <= 0) return 0;
+		if (x >= 1) return 1;
+		let t = x;
+		for (let i = 0; i < 8; i++) {
+			const x2 = ((ax * t + bx) * t + cx) * t - x;
+			if (Math.abs(x2) < epsilon) return ((ay * t + by) * t + cy) * t;
+			const d2 = (3 * ax * t + 2 * bx) * t + cx;
+			if (Math.abs(d2) < 1e-6) break;
+			t -= x2 / d2;
 		}
+		let t0 = 0;
+		let t1 = 1;
+		t = x;
+		for (let i = 0; i < 20; i++) {
+			const x2 = ((ax * t + bx) * t + cx) * t;
+			if (Math.abs(x2 - x) < epsilon) break;
+			if (x > x2) t0 = t;
+			else t1 = t;
+			t = (t0 + t1) * .5;
+		}
+		return ((ay * t + by) * t + cy) * t;
 	};
-})))(), 1);
+}
+//#endregion
+//#region src/util/offscreen_canvas_supported.ts
 let supportsOffscreenCanvas;
 function offscreenCanvasSupported() {
 	supportsOffscreenCanvas ??= typeof OffscreenCanvas !== "undefined" && new OffscreenCanvas(1, 1).getContext("2d") && typeof createImageBitmap === "function";
@@ -2198,10 +2178,7 @@ function easeCubicInOut(t) {
 * @param p2y - control point 2 y coordinate
 */
 function bezier(p1x, p1y, p2x, p2y) {
-	const bezier = new import_unitbezier$1.default(p1x, p1y, p2x, p2y);
-	return (t) => {
-		return bezier.solve(t);
-	};
+	return unitBezier(p1x, p1y, p2x, p2y);
 }
 /**
 * A default bezier-curve powered easing function with
@@ -12575,8 +12552,16 @@ var AJAXError = class extends Error {
 * For files loaded from the local file system, `location.origin` will be set
 * to the string(!) "null" (Firefox), or "file://" (Chrome, Safari, Edge),
 * and we will set an empty referrer. Otherwise, we're using the document's URL.
+* If we're on a blob URL and parent window is cross-origin, parent.location throws
+* SecurityError DOMException, this means we are probably not in blob URL worker bundle.
 */
-const getReferrer = () => isWorker(self) ? self.worker?.referrer : (window.location.protocol === "blob:" ? window.parent : window).location.href;
+function getReferrer() {
+	if (isWorker(self)) return self.worker?.referrer;
+	if (window.location.protocol === "blob:") try {
+		return window.parent.location.href;
+	} catch {}
+	return window.location.href;
+}
 /**
 * Determines whether a URL is a file:// URL. This is obviously the case if it begins
 * with file://. Relative URLs are also file:// URLs iff the original document was loaded
@@ -12702,8 +12687,30 @@ const getJSON = (requestParameters, abortController) => {
 const getArrayBuffer = (requestParameters, abortController) => {
 	return makeRequest(extend(requestParameters, { type: "arrayBuffer" }), abortController);
 };
+/** 
+* Determines whether a URL is same origin as the current location. Supports relative URLs too.
+* 
+* A relative URL "/foo" or "./foo" will throw exception in URL's ctor,
+* try-catch is expansive so just use a heuristic check to avoid it
+* 
+* - Relative URL and empty URL are always same origin.
+* - data URL containing an image is always same origin.
+* - blob URL is checked using `URL` constructor by its parent URL; opaque blob URL is never same origin.
+* - Absolute URL is checked using `URL` constructor.
+* 
+* Checks blob URL before relative URL because opaque blob URL does not contain `://` too.
+* 
+* @param inComingUrl - The URL to check
+* @returns `true` if the URL is same origin as current location, `false` otherwise
+*/
 function sameOrigin(inComingUrl) {
-	if (!inComingUrl || inComingUrl.indexOf("://") <= 0 || inComingUrl.startsWith("data:image/") || inComingUrl.startsWith("blob:")) return true;
+	if (!inComingUrl) return true;
+	if (inComingUrl.startsWith("data:image/")) return true;
+	if (inComingUrl.startsWith("blob:")) {
+		inComingUrl = inComingUrl.slice(5);
+		if (inComingUrl.startsWith("null")) return false;
+	}
+	if (inComingUrl.indexOf("://") <= 0) return true;
 	const urlObj = new URL(inComingUrl);
 	const locationObj = window.location;
 	return urlObj.protocol === locationObj.protocol && urlObj.host === locationObj.host;
@@ -13425,42 +13432,38 @@ function fetchStyle(value) {
 //#endregion
 //#region node_modules/pbf/index.js
 const SHIFT_LEFT_32 = 65536 * 65536;
-const SHIFT_RIGHT_32 = 1 / SHIFT_LEFT_32;
 const TEXT_DECODER_MIN_LENGTH$1 = 12;
 const utf8TextDecoder$1 = typeof TextDecoder === "undefined" ? null : new TextDecoder("utf-8");
 const PBF_VARINT = 0;
 const PBF_FIXED64 = 1;
 const PBF_BYTES = 2;
 const PBF_FIXED32 = 5;
-var Pbf = class {
+var PbfReader = class {
 	/**
-	* @param {Uint8Array | ArrayBuffer} [buf]
+	* @param {Uint8Array | ArrayBuffer} buf
 	*/
-	constructor(buf = new Uint8Array(16)) {
+	constructor(buf) {
 		this.buf = ArrayBuffer.isView(buf) ? buf : new Uint8Array(buf);
 		this.dataView = new DataView(this.buf.buffer);
 		this.pos = 0;
 		this.type = 0;
+		this._valueStart = -1;
 		this.length = this.buf.length;
 	}
 	/**
 	* @template T
-	* @param {(tag: number, result: T, pbf: Pbf) => void} readField
+	* @param {(tag: number, result: T, pbf: PbfReader) => void} readField
 	* @param {T} result
 	* @param {number} [end]
 	*/
 	readFields(readField, result, end = this.length) {
-		while (this.pos < end) {
-			const val = this.readVarint(), tag = val >> 3, startPos = this.pos;
-			this.type = val & 7;
-			readField(tag, result, this);
-			if (this.pos === startPos) this.skip(val);
-		}
+		let field;
+		while (field = this.nextField(end)) readField(field, result, this);
 		return result;
 	}
 	/**
 	* @template T
-	* @param {(tag: number, result: T, pbf: Pbf) => void} readField
+	* @param {(tag: number, result: T, pbf: PbfReader) => void} readField
 	* @param {T} result
 	*/
 	readMessage(readField, result) {
@@ -13501,10 +13504,9 @@ var Pbf = class {
 	*/
 	readVarint(isSigned) {
 		const buf = this.buf;
-		let val, b;
-		b = buf[this.pos++];
-		val = b & 127;
-		if (b < 128) return val;
+		const b0 = buf[this.pos++];
+		if (b0 < 128) return b0;
+		let val = b0 & 127, b;
 		b = buf[this.pos++];
 		val |= (b & 127) << 7;
 		if (b < 128) return val;
@@ -13517,9 +13519,6 @@ var Pbf = class {
 		b = buf[this.pos];
 		val |= (b & 15) << 28;
 		return readVarintRemainder(val, isSigned, this);
-	}
-	readVarint64() {
-		return this.readVarint(true);
 	}
 	readSVarint() {
 		const num = this.readVarint();
@@ -13600,6 +13599,18 @@ var Pbf = class {
 	readPackedEnd() {
 		return this.type === PBF_BYTES ? this.readVarint() + this.pos : this.pos + 1;
 	}
+	/**
+	* Advance to the next field. Returns the field number, or 0 at end-of-message.
+	* @param {number} [end]
+	*/
+	nextField(end = this.length) {
+		if (this.pos === this._valueStart) this.skip(this.type);
+		if (this.pos >= end) return 0;
+		const tag = this.readVarint();
+		this.type = tag & 7;
+		this._valueStart = this.pos;
+		return tag >>> 3;
+	}
 	/** @param {number} val */
 	skip(val) {
 		const type = val & 7;
@@ -13609,292 +13620,11 @@ var Pbf = class {
 		else if (type === PBF_FIXED64) this.pos += 8;
 		else throw new Error(`Unimplemented type: ${type}`);
 	}
-	/**
-	* @param {number} tag
-	* @param {number} type
-	*/
-	writeTag(tag, type) {
-		this.writeVarint(tag << 3 | type);
-	}
-	/** @param {number} min */
-	realloc(min) {
-		let length = this.length || 16;
-		while (length < this.pos + min) length *= 2;
-		if (length !== this.length) {
-			const buf = new Uint8Array(length);
-			buf.set(this.buf);
-			this.buf = buf;
-			this.dataView = new DataView(buf.buffer);
-			this.length = length;
-		}
-	}
-	finish() {
-		this.length = this.pos;
-		this.pos = 0;
-		return this.buf.subarray(0, this.length);
-	}
-	/** @param {number} val */
-	writeFixed32(val) {
-		this.realloc(4);
-		this.dataView.setInt32(this.pos, val, true);
-		this.pos += 4;
-	}
-	/** @param {number} val */
-	writeSFixed32(val) {
-		this.realloc(4);
-		this.dataView.setInt32(this.pos, val, true);
-		this.pos += 4;
-	}
-	/** @param {number} val */
-	writeFixed64(val) {
-		this.realloc(8);
-		this.dataView.setInt32(this.pos, val & -1, true);
-		this.dataView.setInt32(this.pos + 4, Math.floor(val * SHIFT_RIGHT_32), true);
-		this.pos += 8;
-	}
-	/** @param {number} val */
-	writeSFixed64(val) {
-		this.realloc(8);
-		this.dataView.setInt32(this.pos, val & -1, true);
-		this.dataView.setInt32(this.pos + 4, Math.floor(val * SHIFT_RIGHT_32), true);
-		this.pos += 8;
-	}
-	/** @param {number} val */
-	writeVarint(val) {
-		val = +val || 0;
-		if (val > 268435455 || val < 0) {
-			writeBigVarint(val, this);
-			return;
-		}
-		this.realloc(4);
-		this.buf[this.pos++] = val & 127 | (val > 127 ? 128 : 0);
-		if (val <= 127) return;
-		this.buf[this.pos++] = (val >>>= 7) & 127 | (val > 127 ? 128 : 0);
-		if (val <= 127) return;
-		this.buf[this.pos++] = (val >>>= 7) & 127 | (val > 127 ? 128 : 0);
-		if (val <= 127) return;
-		this.buf[this.pos++] = val >>> 7 & 127;
-	}
-	/** @param {number} val */
-	writeSVarint(val) {
-		this.writeVarint(val < 0 ? -val * 2 - 1 : val * 2);
-	}
-	/** @param {boolean} val */
-	writeBoolean(val) {
-		this.writeVarint(+val);
-	}
-	/** @param {string} str */
-	writeString(str) {
-		str = String(str);
-		this.realloc(str.length * 4);
-		this.pos++;
-		const startPos = this.pos;
-		this.pos = writeUtf8(this.buf, str, this.pos);
-		const len = this.pos - startPos;
-		if (len >= 128) makeRoomForExtraLength(startPos, len, this);
-		this.pos = startPos - 1;
-		this.writeVarint(len);
-		this.pos += len;
-	}
-	/** @param {number} val */
-	writeFloat(val) {
-		this.realloc(4);
-		this.dataView.setFloat32(this.pos, val, true);
-		this.pos += 4;
-	}
-	/** @param {number} val */
-	writeDouble(val) {
-		this.realloc(8);
-		this.dataView.setFloat64(this.pos, val, true);
-		this.pos += 8;
-	}
-	/** @param {Uint8Array} buffer */
-	writeBytes(buffer) {
-		const len = buffer.length;
-		this.writeVarint(len);
-		this.realloc(len);
-		for (let i = 0; i < len; i++) this.buf[this.pos++] = buffer[i];
-	}
-	/**
-	* @template T
-	* @param {(obj: T, pbf: Pbf) => void} fn
-	* @param {T} obj
-	*/
-	writeRawMessage(fn, obj) {
-		this.pos++;
-		const startPos = this.pos;
-		fn(obj, this);
-		const len = this.pos - startPos;
-		if (len >= 128) makeRoomForExtraLength(startPos, len, this);
-		this.pos = startPos - 1;
-		this.writeVarint(len);
-		this.pos += len;
-	}
-	/**
-	* @template T
-	* @param {number} tag
-	* @param {(obj: T, pbf: Pbf) => void} fn
-	* @param {T} obj
-	*/
-	writeMessage(tag, fn, obj) {
-		this.writeTag(tag, PBF_BYTES);
-		this.writeRawMessage(fn, obj);
-	}
-	/**
-	* @param {number} tag
-	* @param {number[]} arr
-	*/
-	writePackedVarint(tag, arr) {
-		if (arr.length) this.writeMessage(tag, writePackedVarint, arr);
-	}
-	/**
-	* @param {number} tag
-	* @param {number[]} arr
-	*/
-	writePackedSVarint(tag, arr) {
-		if (arr.length) this.writeMessage(tag, writePackedSVarint, arr);
-	}
-	/**
-	* @param {number} tag
-	* @param {boolean[]} arr
-	*/
-	writePackedBoolean(tag, arr) {
-		if (arr.length) this.writeMessage(tag, writePackedBoolean, arr);
-	}
-	/**
-	* @param {number} tag
-	* @param {number[]} arr
-	*/
-	writePackedFloat(tag, arr) {
-		if (arr.length) this.writeMessage(tag, writePackedFloat, arr);
-	}
-	/**
-	* @param {number} tag
-	* @param {number[]} arr
-	*/
-	writePackedDouble(tag, arr) {
-		if (arr.length) this.writeMessage(tag, writePackedDouble, arr);
-	}
-	/**
-	* @param {number} tag
-	* @param {number[]} arr
-	*/
-	writePackedFixed32(tag, arr) {
-		if (arr.length) this.writeMessage(tag, writePackedFixed32, arr);
-	}
-	/**
-	* @param {number} tag
-	* @param {number[]} arr
-	*/
-	writePackedSFixed32(tag, arr) {
-		if (arr.length) this.writeMessage(tag, writePackedSFixed32, arr);
-	}
-	/**
-	* @param {number} tag
-	* @param {number[]} arr
-	*/
-	writePackedFixed64(tag, arr) {
-		if (arr.length) this.writeMessage(tag, writePackedFixed64, arr);
-	}
-	/**
-	* @param {number} tag
-	* @param {number[]} arr
-	*/
-	writePackedSFixed64(tag, arr) {
-		if (arr.length) this.writeMessage(tag, writePackedSFixed64, arr);
-	}
-	/**
-	* @param {number} tag
-	* @param {Uint8Array} buffer
-	*/
-	writeBytesField(tag, buffer) {
-		this.writeTag(tag, PBF_BYTES);
-		this.writeBytes(buffer);
-	}
-	/**
-	* @param {number} tag
-	* @param {number} val
-	*/
-	writeFixed32Field(tag, val) {
-		this.writeTag(tag, PBF_FIXED32);
-		this.writeFixed32(val);
-	}
-	/**
-	* @param {number} tag
-	* @param {number} val
-	*/
-	writeSFixed32Field(tag, val) {
-		this.writeTag(tag, PBF_FIXED32);
-		this.writeSFixed32(val);
-	}
-	/**
-	* @param {number} tag
-	* @param {number} val
-	*/
-	writeFixed64Field(tag, val) {
-		this.writeTag(tag, PBF_FIXED64);
-		this.writeFixed64(val);
-	}
-	/**
-	* @param {number} tag
-	* @param {number} val
-	*/
-	writeSFixed64Field(tag, val) {
-		this.writeTag(tag, PBF_FIXED64);
-		this.writeSFixed64(val);
-	}
-	/**
-	* @param {number} tag
-	* @param {number} val
-	*/
-	writeVarintField(tag, val) {
-		this.writeTag(tag, PBF_VARINT);
-		this.writeVarint(val);
-	}
-	/**
-	* @param {number} tag
-	* @param {number} val
-	*/
-	writeSVarintField(tag, val) {
-		this.writeTag(tag, PBF_VARINT);
-		this.writeSVarint(val);
-	}
-	/**
-	* @param {number} tag
-	* @param {string} str
-	*/
-	writeStringField(tag, str) {
-		this.writeTag(tag, PBF_BYTES);
-		this.writeString(str);
-	}
-	/**
-	* @param {number} tag
-	* @param {number} val
-	*/
-	writeFloatField(tag, val) {
-		this.writeTag(tag, PBF_FIXED32);
-		this.writeFloat(val);
-	}
-	/**
-	* @param {number} tag
-	* @param {number} val
-	*/
-	writeDoubleField(tag, val) {
-		this.writeTag(tag, PBF_FIXED64);
-		this.writeDouble(val);
-	}
-	/**
-	* @param {number} tag
-	* @param {boolean} val
-	*/
-	writeBooleanField(tag, val) {
-		this.writeVarintField(tag, +val);
-	}
 };
 /**
 * @param {number} l
 * @param {boolean | undefined} s
-* @param {Pbf} p
+* @param {PbfReader} p
 */
 function readVarintRemainder(l, s, p) {
 	const buf = p.buf;
@@ -13926,136 +13656,6 @@ function readVarintRemainder(l, s, p) {
 */
 function toNum(low, high, isSigned) {
 	return isSigned ? high * 4294967296 + (low >>> 0) : (high >>> 0) * 4294967296 + (low >>> 0);
-}
-/**
-* @param {number} val
-* @param {Pbf} pbf
-*/
-function writeBigVarint(val, pbf) {
-	let low, high;
-	if (val >= 0) {
-		low = val % 4294967296 | 0;
-		high = val / 4294967296 | 0;
-	} else {
-		low = ~(-val % 4294967296);
-		high = ~(-val / 4294967296);
-		if (low ^ 4294967295) low = low + 1 | 0;
-		else {
-			low = 0;
-			high = high + 1 | 0;
-		}
-	}
-	if (val >= 0x10000000000000000 || val < -0x10000000000000000) throw new Error("Given varint doesn't fit into 10 bytes");
-	pbf.realloc(10);
-	writeBigVarintLow(low, high, pbf);
-	writeBigVarintHigh(high, pbf);
-}
-/**
-* @param {number} high
-* @param {number} low
-* @param {Pbf} pbf
-*/
-function writeBigVarintLow(low, high, pbf) {
-	pbf.buf[pbf.pos++] = low & 127 | 128;
-	low >>>= 7;
-	pbf.buf[pbf.pos++] = low & 127 | 128;
-	low >>>= 7;
-	pbf.buf[pbf.pos++] = low & 127 | 128;
-	low >>>= 7;
-	pbf.buf[pbf.pos++] = low & 127 | 128;
-	low >>>= 7;
-	pbf.buf[pbf.pos] = low & 127;
-}
-/**
-* @param {number} high
-* @param {Pbf} pbf
-*/
-function writeBigVarintHigh(high, pbf) {
-	const lsb = (high & 7) << 4;
-	pbf.buf[pbf.pos++] |= lsb | ((high >>>= 3) ? 128 : 0);
-	if (!high) return;
-	pbf.buf[pbf.pos++] = high & 127 | ((high >>>= 7) ? 128 : 0);
-	if (!high) return;
-	pbf.buf[pbf.pos++] = high & 127 | ((high >>>= 7) ? 128 : 0);
-	if (!high) return;
-	pbf.buf[pbf.pos++] = high & 127 | ((high >>>= 7) ? 128 : 0);
-	if (!high) return;
-	pbf.buf[pbf.pos++] = high & 127 | ((high >>>= 7) ? 128 : 0);
-	if (!high) return;
-	pbf.buf[pbf.pos++] = high & 127;
-}
-/**
-* @param {number} startPos
-* @param {number} len
-* @param {Pbf} pbf
-*/
-function makeRoomForExtraLength(startPos, len, pbf) {
-	const extraLen = len <= 16383 ? 1 : len <= 2097151 ? 2 : len <= 268435455 ? 3 : Math.floor(Math.log(len) / (Math.LN2 * 7));
-	pbf.realloc(extraLen);
-	for (let i = pbf.pos - 1; i >= startPos; i--) pbf.buf[i + extraLen] = pbf.buf[i];
-}
-/**
-* @param {number[]} arr
-* @param {Pbf} pbf
-*/
-function writePackedVarint(arr, pbf) {
-	for (let i = 0; i < arr.length; i++) pbf.writeVarint(arr[i]);
-}
-/**
-* @param {number[]} arr
-* @param {Pbf} pbf
-*/
-function writePackedSVarint(arr, pbf) {
-	for (let i = 0; i < arr.length; i++) pbf.writeSVarint(arr[i]);
-}
-/**
-* @param {number[]} arr
-* @param {Pbf} pbf
-*/
-function writePackedFloat(arr, pbf) {
-	for (let i = 0; i < arr.length; i++) pbf.writeFloat(arr[i]);
-}
-/**
-* @param {number[]} arr
-* @param {Pbf} pbf
-*/
-function writePackedDouble(arr, pbf) {
-	for (let i = 0; i < arr.length; i++) pbf.writeDouble(arr[i]);
-}
-/**
-* @param {boolean[]} arr
-* @param {Pbf} pbf
-*/
-function writePackedBoolean(arr, pbf) {
-	for (let i = 0; i < arr.length; i++) pbf.writeBoolean(arr[i]);
-}
-/**
-* @param {number[]} arr
-* @param {Pbf} pbf
-*/
-function writePackedFixed32(arr, pbf) {
-	for (let i = 0; i < arr.length; i++) pbf.writeFixed32(arr[i]);
-}
-/**
-* @param {number[]} arr
-* @param {Pbf} pbf
-*/
-function writePackedSFixed32(arr, pbf) {
-	for (let i = 0; i < arr.length; i++) pbf.writeSFixed32(arr[i]);
-}
-/**
-* @param {number[]} arr
-* @param {Pbf} pbf
-*/
-function writePackedFixed64(arr, pbf) {
-	for (let i = 0; i < arr.length; i++) pbf.writeFixed64(arr[i]);
-}
-/**
-* @param {number[]} arr
-* @param {Pbf} pbf
-*/
-function writePackedSFixed64(arr, pbf) {
-	for (let i = 0; i < arr.length; i++) pbf.writeSFixed64(arr[i]);
 }
 /**
 * @param {Uint8Array} buf
@@ -14108,61 +13708,13 @@ function readUtf8$1(buf, pos, end) {
 	}
 	return str;
 }
-/**
-* @param {Uint8Array} buf
-* @param {string} str
-* @param {number} pos
-*/
-function writeUtf8(buf, str, pos) {
-	for (let i = 0, c, lead; i < str.length; i++) {
-		c = str.charCodeAt(i);
-		if (c > 55295 && c < 57344) if (lead) if (c < 56320) {
-			buf[pos++] = 239;
-			buf[pos++] = 191;
-			buf[pos++] = 189;
-			lead = c;
-			continue;
-		} else {
-			c = lead - 55296 << 10 | c - 56320 | 65536;
-			lead = null;
-		}
-		else {
-			if (c > 56319 || i + 1 === str.length) {
-				buf[pos++] = 239;
-				buf[pos++] = 191;
-				buf[pos++] = 189;
-			} else lead = c;
-			continue;
-		}
-		else if (lead) {
-			buf[pos++] = 239;
-			buf[pos++] = 191;
-			buf[pos++] = 189;
-			lead = null;
-		}
-		if (c < 128) buf[pos++] = c;
-		else {
-			if (c < 2048) buf[pos++] = c >> 6 | 192;
-			else {
-				if (c < 65536) buf[pos++] = c >> 12 | 224;
-				else {
-					buf[pos++] = c >> 18 | 240;
-					buf[pos++] = c >> 12 & 63 | 128;
-				}
-				buf[pos++] = c >> 6 & 63 | 128;
-			}
-			buf[pos++] = c & 63 | 128;
-		}
-	}
-	return pos;
-}
 //#endregion
 //#region node_modules/@mapbox/vector-tile/index.js
-/** @import Pbf from 'pbf' */
+/** @import {PbfReader} from 'pbf' */
 /** @import {Feature} from 'geojson' */
 var VectorTileFeature = class {
 	/**
-	* @param {Pbf} pbf
+	* @param {PbfReader} pbf
 	* @param {number} end
 	* @param {number} extent
 	* @param {string[]} keys
@@ -14170,7 +13722,7 @@ var VectorTileFeature = class {
 	*/
 	constructor(pbf, end, extent, keys, values) {
 		/** @type {Record<string, number | string | boolean>} */
-		this.properties = {};
+		this.properties = Object.create(null);
 		this.extent = extent;
 		/** @type {0 | 1 | 2 | 3} */
 		this.type = 0;
@@ -14184,9 +13736,25 @@ var VectorTileFeature = class {
 		this._keys = keys;
 		/** @private */
 		this._values = values;
-		pbf.readFields(readFeature, this, end);
+		while (pbf.pos < end) {
+			const tag = pbf.readVarint();
+			if (tag === 8) this.id = pbf.readVarint();
+			else if (tag === 18) {
+				const tagsEnd = pbf.readVarint() + pbf.pos;
+				while (pbf.pos < tagsEnd) {
+					const key = keys[pbf.readVarint()];
+					const value = values[pbf.readVarint()];
+					this.properties[key] = value;
+				}
+			} else if (tag === 24) this.type = pbf.readVarint();
+			else if (tag === 34) {
+				this._geometry = pbf.pos;
+				pbf.skip(tag);
+			} else pbf.skip(tag);
+		}
 	}
 	loadGeometry() {
+		if (this._geometry < 0) throw new Error("feature has no geometry");
 		const pbf = this._pbf;
 		pbf.pos = this._geometry;
 		const end = pbf.readVarint() + pbf.pos;
@@ -14203,15 +13771,17 @@ var VectorTileFeature = class {
 				const cmdLen = pbf.readVarint();
 				cmd = cmdLen & 7;
 				length = cmdLen >> 3;
+				if (length === 0) continue;
 			}
 			length--;
-			if (cmd === 1 || cmd === 2) {
+			if (cmd === 1) {
 				x += pbf.readSVarint();
 				y += pbf.readSVarint();
-				if (cmd === 1) {
-					if (line) lines.push(line);
-					line = [];
-				}
+				if (line) lines.push(line);
+				line = [new Point(x, y)];
+			} else if (cmd === 2) {
+				x += pbf.readSVarint();
+				y += pbf.readSVarint();
 				if (line) line.push(new Point(x, y));
 			} else if (cmd === 7) {
 				if (line) line.push(line[0].clone());
@@ -14221,6 +13791,7 @@ var VectorTileFeature = class {
 		return lines;
 	}
 	bbox() {
+		if (this._geometry < 0) throw new Error("feature has no geometry");
 		const pbf = this._pbf;
 		pbf.pos = this._geometry;
 		const end = pbf.readVarint() + pbf.pos;
@@ -14230,6 +13801,7 @@ var VectorTileFeature = class {
 				const cmdLen = pbf.readVarint();
 				cmd = cmdLen & 7;
 				length = cmdLen >> 3;
+				if (length === 0) continue;
 			}
 			length--;
 			if (cmd === 1 || cmd === 2) {
@@ -14315,29 +13887,6 @@ VectorTileFeature.types = [
 	"LineString",
 	"Polygon"
 ];
-/**
-* @param {number} tag
-* @param {VectorTileFeature} feature
-* @param {Pbf} pbf
-*/
-function readFeature(tag, feature, pbf) {
-	if (tag === 1) feature.id = pbf.readVarint();
-	else if (tag === 2) readTag(pbf, feature);
-	else if (tag === 3) feature.type = pbf.readVarint();
-	else if (tag === 4) feature._geometry = pbf.pos;
-}
-/**
-* @param {Pbf} pbf
-* @param {VectorTileFeature} feature
-*/
-function readTag(pbf, feature) {
-	const end = pbf.readVarint() + pbf.pos;
-	while (pbf.pos < end) {
-		const key = feature._keys[pbf.readVarint()];
-		const value = feature._values[pbf.readVarint()];
-		feature.properties[key] = value;
-	}
-}
 /** classifies an array of rings into polygons with outer rings and holes
 * @param {Point[][]} rings
 */
@@ -14370,7 +13919,7 @@ function signedArea$1(ring) {
 }
 var VectorTileLayer = class {
 	/**
-	* @param {Pbf} pbf
+	* @param {PbfReader} pbf
 	* @param {number} [end]
 	*/
 	constructor(pbf, end) {
@@ -14389,7 +13938,19 @@ var VectorTileLayer = class {
 		/** @private
 		* @type {number[]} */
 		this._features = [];
-		pbf.readFields(readLayer, this, end);
+		if (end === void 0) end = pbf.length;
+		while (pbf.pos < end) {
+			const tag = pbf.readVarint();
+			if (tag === 10) this.name = pbf.readString();
+			else if (tag === 18) {
+				this._features.push(pbf.pos);
+				pbf.skip(tag);
+			} else if (tag === 26) this._keys.push(pbf.readString());
+			else if (tag === 34) this._values.push(readValueMessage(pbf));
+			else if (tag === 40) this.extent = pbf.readVarint();
+			else if (tag === 120) this.version = pbf.readVarint();
+			else pbf.skip(tag);
+		}
 		this.length = this._features.length;
 	}
 	/** return feature `i` from this layer as a `VectorTileFeature`
@@ -14403,52 +13964,36 @@ var VectorTileLayer = class {
 	}
 };
 /**
-* @param {number} tag
-* @param {VectorTileLayer} layer
-* @param {Pbf} pbf
-*/
-function readLayer(tag, layer, pbf) {
-	if (tag === 15) layer.version = pbf.readVarint();
-	else if (tag === 1) layer.name = pbf.readString();
-	else if (tag === 5) layer.extent = pbf.readVarint();
-	else if (tag === 2) layer._features.push(pbf.pos);
-	else if (tag === 3) layer._keys.push(pbf.readString());
-	else if (tag === 4) layer._values.push(readValueMessage(pbf));
-}
-/**
-* @param {Pbf} pbf
+* @param {PbfReader} pbf
 */
 function readValueMessage(pbf) {
 	let value = null;
 	const end = pbf.readVarint() + pbf.pos;
 	while (pbf.pos < end) {
-		const tag = pbf.readVarint() >> 3;
-		value = tag === 1 ? pbf.readString() : tag === 2 ? pbf.readFloat() : tag === 3 ? pbf.readDouble() : tag === 4 ? pbf.readVarint64() : tag === 5 ? pbf.readVarint() : tag === 6 ? pbf.readSVarint() : tag === 7 ? pbf.readBoolean() : null;
+		const tag = pbf.readVarint();
+		value = tag === 10 ? pbf.readString() : tag === 21 ? pbf.readFloat() : tag === 25 ? pbf.readDouble() : tag === 32 ? pbf.readVarint(true) : tag === 40 ? pbf.readVarint() : tag === 48 ? pbf.readSVarint() : tag === 56 ? pbf.readBoolean() : (pbf.skip(tag), null);
 	}
 	if (value == null) throw new Error("unknown feature value");
 	return value;
 }
 var VectorTile = class {
 	/**
-	* @param {Pbf} pbf
+	* @param {PbfReader} pbf
 	* @param {number} [end]
 	*/
-	constructor(pbf, end) {
+	constructor(pbf, end = pbf.length) {
 		/** @type {Record<string, VectorTileLayer>} */
-		this.layers = pbf.readFields(readTile, {}, end);
+		const layers = Object.create(null);
+		while (pbf.pos < end) {
+			const tag = pbf.readVarint();
+			if (tag === 26) {
+				const layer = new VectorTileLayer(pbf, pbf.readVarint() + pbf.pos);
+				if (layer.length) layers[layer.name] = layer;
+			} else pbf.skip(tag);
+		}
+		this.layers = layers;
 	}
 };
-/**
-* @param {number} tag
-* @param {Record<string, VectorTileLayer>} layers
-* @param {Pbf} pbf
-*/
-function readTile(tag, layers, pbf) {
-	if (tag === 3) {
-		const layer = new VectorTileLayer(pbf, pbf.readVarint() + pbf.pos);
-		if (layer.length) layers[layer.name] = layer;
-	}
-}
 //#endregion
 //#region src/util/evented.ts
 function _addEventListener(type, listener, listenerList) {
@@ -15406,7 +14951,7 @@ var StyleLayer = class extends Evented {
 			return;
 		}
 		if (this._transitionablePaint?.hasProperty(name)) {
-			this.fire(new ErrorEvent(new Error(name + ERROR_PAINT_NOT_LAYOUT)));
+			this.fire(new ErrorEvent(/* @__PURE__ */ new Error(name + ERROR_PAINT_NOT_LAYOUT)));
 			return;
 		}
 		if (value !== null && value !== void 0 && this._validate(validateLayoutProperty, `layers.${this.id}.layout.${name}`, name, value, options)) return;
@@ -15424,7 +14969,7 @@ var StyleLayer = class extends Evented {
 	}
 	setPaintProperty(name, value, options = {}) {
 		if (name === "visibility" || this._unevaluatedLayout?.hasProperty(name)) {
-			this.fire(new ErrorEvent(new Error(name + ERROR_LAYOUT_NOT_PAINT)));
+			this.fire(new ErrorEvent(/* @__PURE__ */ new Error(name + ERROR_LAYOUT_NOT_PAINT)));
 			return false;
 		}
 		if (value !== null && value !== void 0 && this._validate(validatePaintProperty, `layers.${this.id}.paint.${name}`, name, value, options)) return false;
@@ -17412,8 +16957,8 @@ var CrossFadedBinder = class {
 		const max = positions[positionIds.max];
 		if (!min || !mid || !max) return;
 		for (let i = start; i < end; i++) {
-			this.emplace(this.zoomInPaintVertexArray, i, mid, min);
-			this.emplace(this.zoomOutPaintVertexArray, i, mid, max);
+			this.emplace(this.zoomInPaintVertexArray, i, min, mid);
+			this.emplace(this.zoomOutPaintVertexArray, i, max, mid);
 		}
 	}
 	upload(context) {
@@ -17438,8 +16983,8 @@ var CrossFadedPatternBinder = class extends CrossFadedBinder {
 	getVertexAttributes() {
 		return patternAttributes.members;
 	}
-	emplace(array, index, midPos, minMaxPos) {
-		array.emplace(index, midPos.tlbr[0], midPos.tlbr[1], midPos.tlbr[2], midPos.tlbr[3], minMaxPos.tlbr[0], minMaxPos.tlbr[1], minMaxPos.tlbr[2], minMaxPos.tlbr[3], midPos.pixelRatio, minMaxPos.pixelRatio);
+	emplace(array, index, fromPos, toPos) {
+		array.emplace(index, fromPos.tlbr[0], fromPos.tlbr[1], fromPos.tlbr[2], fromPos.tlbr[3], toPos.tlbr[0], toPos.tlbr[1], toPos.tlbr[2], toPos.tlbr[3], fromPos.pixelRatio, toPos.pixelRatio);
 	}
 };
 var CrossFadedDasharrayBinder = class extends CrossFadedBinder {
@@ -17452,8 +16997,8 @@ var CrossFadedDasharrayBinder = class extends CrossFadedBinder {
 	getVertexAttributes() {
 		return dashAttributes.members;
 	}
-	emplace(array, index, midPos, minMaxPos) {
-		array.emplace(index, 0, midPos.y, midPos.height, midPos.width, 0, minMaxPos.y, minMaxPos.height, minMaxPos.width);
+	emplace(array, index, fromPos, toPos) {
+		array.emplace(index, 0, fromPos.y, fromPos.height, fromPos.width, 0, toPos.y, toPos.height, toPos.width);
 	}
 };
 /**
@@ -22021,7 +21566,7 @@ function readGlyph(tag, glyph, pbf) {
 	else if (tag === 7) glyph.advance = pbf.readVarint();
 }
 function parseGlyphPbf(data) {
-	return new Pbf(data).readFields(readFontstacks, []);
+	return new PbfReader(data).readFields(readFontstacks, []);
 }
 //#endregion
 //#region src/style/style_image.ts
@@ -29866,6 +29411,48 @@ var LengthType;
 })(LengthType || (LengthType = {}));
 //#endregion
 //#region node_modules/@maplibre/mlt/dist/metadata/tile/streamMetadataDecoder.js
+const PHYSICAL_STREAM_TYPE_BY_ID = [
+	PhysicalStreamType.PRESENT,
+	PhysicalStreamType.DATA,
+	PhysicalStreamType.OFFSET,
+	PhysicalStreamType.LENGTH
+];
+const LOGICAL_LEVEL_TECHNIQUE_BY_ID = [
+	LogicalLevelTechnique.NONE,
+	LogicalLevelTechnique.DELTA,
+	LogicalLevelTechnique.COMPONENTWISE_DELTA,
+	LogicalLevelTechnique.RLE,
+	LogicalLevelTechnique.MORTON,
+	LogicalLevelTechnique.PDE
+];
+const PHYSICAL_LEVEL_TECHNIQUE_BY_ID = [
+	PhysicalLevelTechnique.NONE,
+	PhysicalLevelTechnique.FAST_PFOR,
+	PhysicalLevelTechnique.VARINT
+];
+const DICTIONARY_TYPE_BY_ID = [
+	DictionaryType.NONE,
+	DictionaryType.SINGLE,
+	DictionaryType.SHARED,
+	DictionaryType.VERTEX,
+	DictionaryType.MORTON,
+	DictionaryType.FSST
+];
+const OFFSET_TYPE_BY_ID = [
+	OffsetType.VERTEX,
+	OffsetType.INDEX,
+	OffsetType.STRING,
+	OffsetType.KEY
+];
+const LENGTH_TYPE_BY_ID = [
+	LengthType.VAR_BINARY,
+	LengthType.GEOMETRIES,
+	LengthType.PARTS,
+	LengthType.RINGS,
+	LengthType.TRIANGLES,
+	LengthType.SYMBOL,
+	LengthType.DICTIONARY
+];
 function decodeStreamMetadata(tile, offset) {
 	const streamMetadata = decodeStreamMetadataInternal(tile, offset);
 	if (streamMetadata.logicalLevelTechnique1 === LogicalLevelTechnique.MORTON) return decodePartialMortonEncodedStreamMetadata(streamMetadata, tile, offset);
@@ -29904,24 +29491,24 @@ function decodePartialRleEncodedStreamMetadata(streamMetadata, tile, offset) {
 }
 function decodeStreamMetadataInternal(tile, offset) {
 	const stream_type = tile[offset.get()];
-	const physicalStreamType = Object.values(PhysicalStreamType)[stream_type >> 4];
-	let logicalStreamType = null;
+	const physicalStreamType = PHYSICAL_STREAM_TYPE_BY_ID[stream_type >> 4];
+	let logicalStreamType = {};
 	switch (physicalStreamType) {
 		case PhysicalStreamType.DATA:
-			logicalStreamType = { dictionaryType: Object.values(DictionaryType)[stream_type & 15] };
+			logicalStreamType = { dictionaryType: DICTIONARY_TYPE_BY_ID[stream_type & 15] };
 			break;
 		case PhysicalStreamType.OFFSET:
-			logicalStreamType = { offsetType: Object.values(OffsetType)[stream_type & 15] };
+			logicalStreamType = { offsetType: OFFSET_TYPE_BY_ID[stream_type & 15] };
 			break;
 		case PhysicalStreamType.LENGTH:
-			logicalStreamType = { lengthType: Object.values(LengthType)[stream_type & 15] };
+			logicalStreamType = { lengthType: LENGTH_TYPE_BY_ID[stream_type & 15] };
 			break;
 	}
 	offset.increment();
 	const encodings_header = tile[offset.get()];
-	const llt1 = Object.values(LogicalLevelTechnique)[encodings_header >> 5];
-	const llt2 = Object.values(LogicalLevelTechnique)[encodings_header >> 2 & 7];
-	const plt = Object.values(PhysicalLevelTechnique)[encodings_header & 3];
+	const llt1 = LOGICAL_LEVEL_TECHNIQUE_BY_ID[encodings_header >> 5];
+	const llt2 = LOGICAL_LEVEL_TECHNIQUE_BY_ID[encodings_header >> 2 & 7];
+	const plt = PHYSICAL_LEVEL_TECHNIQUE_BY_ID[encodings_header & 3];
 	offset.increment();
 	const sizeInfo = decodeVarintInt32(tile, offset, 2);
 	const numValues = sizeInfo[0];
@@ -31842,7 +31429,7 @@ var FeatureIndex = class {
 				case "mlt":
 					this.vtLayers = new MLTVectorTile(this.rawTileData).layers;
 					break;
-				default: this.vtLayers = new VectorTile(new Pbf(this.rawTileData)).layers;
+				default: this.vtLayers = new VectorTile(new PbfReader(this.rawTileData)).layers;
 			}
 			this.sourceLayerCoder = new DictionaryCoder(this.vtLayers ? Object.keys(this.vtLayers).sort() : [GEOJSON_TILE_LAYER_NAME]);
 		}
@@ -43140,7 +42727,7 @@ var TileParser = class {
 			promoteId: void 0,
 			subdivisionGranularity: SubdivisionGranularitySetting.noSubdivision
 		});
-		const vectorTile = new VectorTile(new Pbf(tile.buffer));
+		const vectorTile = new VectorTile(new PbfReader(tile.buffer));
 		return workerTile.parse(vectorTile, this.layerIndex, [], this.actor, SubdivisionGranularitySetting.noSubdivision);
 	}
 };
@@ -44876,7 +44463,7 @@ function isFramebufferNotCompleteError(error) {
 * @returns An error object with the message "Framebuffer is not complete"
 */
 function createFramebufferNotCompleteError() {
-	return new Error(FRAMEBUFFER_NOT_COMPLETE_ERROR);
+	return /* @__PURE__ */ new Error(FRAMEBUFFER_NOT_COMPLETE_ERROR);
 }
 //#endregion
 //#region src/webgl/framebuffer.ts
@@ -53563,7 +53150,7 @@ var Map$1 = class extends Camera {
 	* @see [Add live realtime data](https://maplibre.org/maplibre-gl-js/docs/examples/add-live-realtime-data/)
 	*/
 	getSource(id) {
-		return this.style.getSource(id);
+		return this.style?.getSource(id);
 	}
 	/**
 	* Change the tile Level of Detail behavior of the specified source. These parameters have no effect when
@@ -53808,7 +53395,7 @@ var Map$1 = class extends Camera {
 	* ```
 	*/
 	listImages() {
-		return this.style.listImages();
+		return this.style?.listImages() ?? [];
 	}
 	/**
 	* Adds a [MapLibre style layer](https://maplibre.org/maplibre-style-spec/layers)
@@ -53942,7 +53529,7 @@ var Map$1 = class extends Camera {
 	* @see [Filter symbols by text input](https://maplibre.org/maplibre-gl-js/docs/examples/filter-symbols-by-text-input/)
 	*/
 	getLayer(id) {
-		return this.style.getLayer(id);
+		return this.style?.getLayer(id);
 	}
 	/**
 	* Return the ids of all layers currently in the style, including custom layers, in order.
@@ -53955,7 +53542,7 @@ var Map$1 = class extends Camera {
 	* ```
 	*/
 	getLayersOrder() {
-		return this.style.getLayersOrder();
+		return this.style?.getLayersOrder() ?? [];
 	}
 	/**
 	* Sets the zoom extent for the specified style layer. The zoom extent includes the
@@ -54016,7 +53603,7 @@ var Map$1 = class extends Camera {
 	* @see [Create a timeline animation](https://maplibre.org/maplibre-gl-js/docs/examples/create-a-time-slider/)
 	*/
 	setFilter(layerId, filter, options = {}) {
-		this.style.setFilter(layerId, filter, options);
+		this.style?.setFilter(layerId, filter, options);
 		return this._update(true);
 	}
 	/**
@@ -54045,7 +53632,7 @@ var Map$1 = class extends Camera {
 	* @see [Create a draggable point](https://maplibre.org/maplibre-gl-js/docs/examples/create-a-draggable-point/)
 	*/
 	setPaintProperty(layerId, name, value, options = {}) {
-		this.style.setPaintProperty(layerId, name, value, options);
+		this.style?.setPaintProperty(layerId, name, value, options);
 		return this._update(true);
 	}
 	/**
@@ -57341,7 +56928,7 @@ var FilterCreate = class extends Benchmark {
 //#region test/bench/benchmarks/filter_evaluate.ts
 var FilterEvaluate = class extends Benchmark {
 	async setup() {
-		const tile = new VectorTile(new Pbf(await (await fetch("/test/bench/data/785.vector.pbf")).arrayBuffer()));
+		const tile = new VectorTile(new PbfReader(await (await fetch("/test/bench/data/785.vector.pbf")).arrayBuffer()));
 		this.layers = [];
 		for (const name in tile.layers) {
 			const layer = tile.layers[name];
@@ -60564,7 +60151,7 @@ function buildStyle() {
 const styleLocations = locationsWithTileID(features).filter((v) => v.zoom < 15);
 window.maplibreglBenchmarks = window.maplibreglBenchmarks || {};
 setWorkerUrl(new URL("./benchmarks_worker.mjs", import.meta.url).toString());
-const version = "main ef9b36d";
+const version = "main 384f6ca";
 function register(name, bench) {
 	window.maplibreglBenchmarks[name] = window.maplibreglBenchmarks[name] || {};
 	window.maplibreglBenchmarks[name][version] = bench;

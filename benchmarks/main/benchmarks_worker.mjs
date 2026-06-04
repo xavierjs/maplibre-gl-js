@@ -320,60 +320,40 @@ Point.convert = function(p) {
 	throw new Error("Expected [x, y] or {x, y} point format");
 };
 //#endregion
-//#region src/util/offscreen_canvas_supported.ts
-var import_unitbezier$1 = /* @__PURE__ */ __toESM$1((/* @__PURE__ */ __commonJSMin$1(((exports, module) => {
-	module.exports = UnitBezier;
-	function UnitBezier(p1x, p1y, p2x, p2y) {
-		this.cx = 3 * p1x;
-		this.bx = 3 * (p2x - p1x) - this.cx;
-		this.ax = 1 - this.cx - this.bx;
-		this.cy = 3 * p1y;
-		this.by = 3 * (p2y - p1y) - this.cy;
-		this.ay = 1 - this.cy - this.by;
-		this.p1x = p1x;
-		this.p1y = p1y;
-		this.p2x = p2x;
-		this.p2y = p2y;
-	}
-	UnitBezier.prototype = {
-		sampleCurveX: function(t) {
-			return ((this.ax * t + this.bx) * t + this.cx) * t;
-		},
-		sampleCurveY: function(t) {
-			return ((this.ay * t + this.by) * t + this.cy) * t;
-		},
-		sampleCurveDerivativeX: function(t) {
-			return (3 * this.ax * t + 2 * this.bx) * t + this.cx;
-		},
-		solveCurveX: function(x, epsilon) {
-			if (epsilon === void 0) epsilon = 1e-6;
-			if (x < 0) return 0;
-			if (x > 1) return 1;
-			var t = x;
-			for (var i = 0; i < 8; i++) {
-				var x2 = this.sampleCurveX(t) - x;
-				if (Math.abs(x2) < epsilon) return t;
-				var d2 = this.sampleCurveDerivativeX(t);
-				if (Math.abs(d2) < 1e-6) break;
-				t = t - x2 / d2;
-			}
-			var t0 = 0;
-			var t1 = 1;
-			t = x;
-			for (i = 0; i < 20; i++) {
-				x2 = this.sampleCurveX(t);
-				if (Math.abs(x2 - x) < epsilon) break;
-				if (x > x2) t0 = t;
-				else t1 = t;
-				t = (t1 - t0) * .5 + t0;
-			}
-			return t;
-		},
-		solve: function(x, epsilon) {
-			return this.sampleCurveY(this.solveCurveX(x, epsilon));
+//#region node_modules/@mapbox/unitbezier/index.js
+function unitBezier(p1x, p1y, p2x, p2y) {
+	const cx = 3 * p1x;
+	const bx = 3 * (p2x - p1x) - cx;
+	const ax = 1 - cx - bx;
+	const cy = 3 * p1y;
+	const by = 3 * (p2y - p1y) - cy;
+	const ay = 1 - cy - by;
+	return function solve(x, epsilon = 1e-6) {
+		if (x <= 0) return 0;
+		if (x >= 1) return 1;
+		let t = x;
+		for (let i = 0; i < 8; i++) {
+			const x2 = ((ax * t + bx) * t + cx) * t - x;
+			if (Math.abs(x2) < epsilon) return ((ay * t + by) * t + cy) * t;
+			const d2 = (3 * ax * t + 2 * bx) * t + cx;
+			if (Math.abs(d2) < 1e-6) break;
+			t -= x2 / d2;
 		}
+		let t0 = 0;
+		let t1 = 1;
+		t = x;
+		for (let i = 0; i < 20; i++) {
+			const x2 = ((ax * t + bx) * t + cx) * t;
+			if (Math.abs(x2 - x) < epsilon) break;
+			if (x > x2) t0 = t;
+			else t1 = t;
+			t = (t0 + t1) * .5;
+		}
+		return ((ay * t + by) * t + cy) * t;
 	};
-})))(), 1);
+}
+//#endregion
+//#region src/util/offscreen_canvas_supported.ts
 let supportsOffscreenCanvas;
 function offscreenCanvasSupported() {
 	supportsOffscreenCanvas ??= typeof OffscreenCanvas !== "undefined" && new OffscreenCanvas(1, 1).getContext("2d") && typeof createImageBitmap === "function";
@@ -523,10 +503,7 @@ function easeCubicInOut(t) {
 * @param p2y - control point 2 y coordinate
 */
 function bezier(p1x, p1y, p2x, p2y) {
-	const bezier = new import_unitbezier$1.default(p1x, p1y, p2x, p2y);
-	return (t) => {
-		return bezier.solve(t);
-	};
+	return unitBezier(p1x, p1y, p2x, p2y);
 }
 bezier(.25, .1, .25, 1);
 /**
@@ -9827,8 +9804,16 @@ var AJAXError = class extends Error {
 * For files loaded from the local file system, `location.origin` will be set
 * to the string(!) "null" (Firefox), or "file://" (Chrome, Safari, Edge),
 * and we will set an empty referrer. Otherwise, we're using the document's URL.
+* If we're on a blob URL and parent window is cross-origin, parent.location throws
+* SecurityError DOMException, this means we are probably not in blob URL worker bundle.
 */
-const getReferrer = () => isWorker(self) ? self.worker?.referrer : (window.location.protocol === "blob:" ? window.parent : window).location.href;
+function getReferrer() {
+	if (isWorker(self)) return self.worker?.referrer;
+	if (window.location.protocol === "blob:") try {
+		return window.parent.location.href;
+	} catch {}
+	return window.location.href;
+}
 /**
 * Determines whether a URL is a file:// URL. This is obviously the case if it begins
 * with file://. Relative URLs are also file:// URLs iff the original document was loaded
@@ -11200,7 +11185,7 @@ var StyleLayer = class extends Evented {
 			return;
 		}
 		if (this._transitionablePaint?.hasProperty(name)) {
-			this.fire(new ErrorEvent(new Error(name + ERROR_PAINT_NOT_LAYOUT)));
+			this.fire(new ErrorEvent(/* @__PURE__ */ new Error(name + ERROR_PAINT_NOT_LAYOUT)));
 			return;
 		}
 		if (value !== null && value !== void 0 && this._validate(validateLayoutProperty, `layers.${this.id}.layout.${name}`, name, value, options)) return;
@@ -11218,7 +11203,7 @@ var StyleLayer = class extends Evented {
 	}
 	setPaintProperty(name, value, options = {}) {
 		if (name === "visibility" || this._unevaluatedLayout?.hasProperty(name)) {
-			this.fire(new ErrorEvent(new Error(name + ERROR_LAYOUT_NOT_PAINT)));
+			this.fire(new ErrorEvent(/* @__PURE__ */ new Error(name + ERROR_LAYOUT_NOT_PAINT)));
 			return false;
 		}
 		if (value !== null && value !== void 0 && this._validate(validatePaintProperty, `layers.${this.id}.paint.${name}`, name, value, options)) return false;
@@ -13085,8 +13070,8 @@ var CrossFadedBinder = class {
 		const max = positions[positionIds.max];
 		if (!min || !mid || !max) return;
 		for (let i = start; i < end; i++) {
-			this.emplace(this.zoomInPaintVertexArray, i, mid, min);
-			this.emplace(this.zoomOutPaintVertexArray, i, mid, max);
+			this.emplace(this.zoomInPaintVertexArray, i, min, mid);
+			this.emplace(this.zoomOutPaintVertexArray, i, max, mid);
 		}
 	}
 	upload(context) {
@@ -13111,8 +13096,8 @@ var CrossFadedPatternBinder = class extends CrossFadedBinder {
 	getVertexAttributes() {
 		return patternAttributes.members;
 	}
-	emplace(array, index, midPos, minMaxPos) {
-		array.emplace(index, midPos.tlbr[0], midPos.tlbr[1], midPos.tlbr[2], midPos.tlbr[3], minMaxPos.tlbr[0], minMaxPos.tlbr[1], minMaxPos.tlbr[2], minMaxPos.tlbr[3], midPos.pixelRatio, minMaxPos.pixelRatio);
+	emplace(array, index, fromPos, toPos) {
+		array.emplace(index, fromPos.tlbr[0], fromPos.tlbr[1], fromPos.tlbr[2], fromPos.tlbr[3], toPos.tlbr[0], toPos.tlbr[1], toPos.tlbr[2], toPos.tlbr[3], fromPos.pixelRatio, toPos.pixelRatio);
 	}
 };
 var CrossFadedDasharrayBinder = class extends CrossFadedBinder {
@@ -13125,8 +13110,8 @@ var CrossFadedDasharrayBinder = class extends CrossFadedBinder {
 	getVertexAttributes() {
 		return dashAttributes.members;
 	}
-	emplace(array, index, midPos, minMaxPos) {
-		array.emplace(index, 0, midPos.y, midPos.height, midPos.width, 0, minMaxPos.y, minMaxPos.height, minMaxPos.width);
+	emplace(array, index, fromPos, toPos) {
+		array.emplace(index, 0, fromPos.y, fromPos.height, fromPos.width, 0, toPos.y, toPos.height, toPos.width);
 	}
 };
 /**
@@ -15834,11 +15819,11 @@ layout$2.size;
 layout$2.alignment;
 //#endregion
 //#region node_modules/@mapbox/vector-tile/index.js
-/** @import Pbf from 'pbf' */
+/** @import {PbfReader} from 'pbf' */
 /** @import {Feature} from 'geojson' */
 var VectorTileFeature = class {
 	/**
-	* @param {Pbf} pbf
+	* @param {PbfReader} pbf
 	* @param {number} end
 	* @param {number} extent
 	* @param {string[]} keys
@@ -15846,7 +15831,7 @@ var VectorTileFeature = class {
 	*/
 	constructor(pbf, end, extent, keys, values) {
 		/** @type {Record<string, number | string | boolean>} */
-		this.properties = {};
+		this.properties = Object.create(null);
 		this.extent = extent;
 		/** @type {0 | 1 | 2 | 3} */
 		this.type = 0;
@@ -15860,9 +15845,25 @@ var VectorTileFeature = class {
 		this._keys = keys;
 		/** @private */
 		this._values = values;
-		pbf.readFields(readFeature, this, end);
+		while (pbf.pos < end) {
+			const tag = pbf.readVarint();
+			if (tag === 8) this.id = pbf.readVarint();
+			else if (tag === 18) {
+				const tagsEnd = pbf.readVarint() + pbf.pos;
+				while (pbf.pos < tagsEnd) {
+					const key = keys[pbf.readVarint()];
+					const value = values[pbf.readVarint()];
+					this.properties[key] = value;
+				}
+			} else if (tag === 24) this.type = pbf.readVarint();
+			else if (tag === 34) {
+				this._geometry = pbf.pos;
+				pbf.skip(tag);
+			} else pbf.skip(tag);
+		}
 	}
 	loadGeometry() {
+		if (this._geometry < 0) throw new Error("feature has no geometry");
 		const pbf = this._pbf;
 		pbf.pos = this._geometry;
 		const end = pbf.readVarint() + pbf.pos;
@@ -15879,15 +15880,17 @@ var VectorTileFeature = class {
 				const cmdLen = pbf.readVarint();
 				cmd = cmdLen & 7;
 				length = cmdLen >> 3;
+				if (length === 0) continue;
 			}
 			length--;
-			if (cmd === 1 || cmd === 2) {
+			if (cmd === 1) {
 				x += pbf.readSVarint();
 				y += pbf.readSVarint();
-				if (cmd === 1) {
-					if (line) lines.push(line);
-					line = [];
-				}
+				if (line) lines.push(line);
+				line = [new Point(x, y)];
+			} else if (cmd === 2) {
+				x += pbf.readSVarint();
+				y += pbf.readSVarint();
 				if (line) line.push(new Point(x, y));
 			} else if (cmd === 7) {
 				if (line) line.push(line[0].clone());
@@ -15897,6 +15900,7 @@ var VectorTileFeature = class {
 		return lines;
 	}
 	bbox() {
+		if (this._geometry < 0) throw new Error("feature has no geometry");
 		const pbf = this._pbf;
 		pbf.pos = this._geometry;
 		const end = pbf.readVarint() + pbf.pos;
@@ -15906,6 +15910,7 @@ var VectorTileFeature = class {
 				const cmdLen = pbf.readVarint();
 				cmd = cmdLen & 7;
 				length = cmdLen >> 3;
+				if (length === 0) continue;
 			}
 			length--;
 			if (cmd === 1 || cmd === 2) {
@@ -15991,29 +15996,6 @@ VectorTileFeature.types = [
 	"LineString",
 	"Polygon"
 ];
-/**
-* @param {number} tag
-* @param {VectorTileFeature} feature
-* @param {Pbf} pbf
-*/
-function readFeature(tag, feature, pbf) {
-	if (tag === 1) feature.id = pbf.readVarint();
-	else if (tag === 2) readTag(pbf, feature);
-	else if (tag === 3) feature.type = pbf.readVarint();
-	else if (tag === 4) feature._geometry = pbf.pos;
-}
-/**
-* @param {Pbf} pbf
-* @param {VectorTileFeature} feature
-*/
-function readTag(pbf, feature) {
-	const end = pbf.readVarint() + pbf.pos;
-	while (pbf.pos < end) {
-		const key = feature._keys[pbf.readVarint()];
-		const value = feature._values[pbf.readVarint()];
-		feature.properties[key] = value;
-	}
-}
 /** classifies an array of rings into polygons with outer rings and holes
 * @param {Point[][]} rings
 */
@@ -16046,7 +16028,7 @@ function signedArea(ring) {
 }
 var VectorTileLayer = class {
 	/**
-	* @param {Pbf} pbf
+	* @param {PbfReader} pbf
 	* @param {number} [end]
 	*/
 	constructor(pbf, end) {
@@ -16065,7 +16047,19 @@ var VectorTileLayer = class {
 		/** @private
 		* @type {number[]} */
 		this._features = [];
-		pbf.readFields(readLayer, this, end);
+		if (end === void 0) end = pbf.length;
+		while (pbf.pos < end) {
+			const tag = pbf.readVarint();
+			if (tag === 10) this.name = pbf.readString();
+			else if (tag === 18) {
+				this._features.push(pbf.pos);
+				pbf.skip(tag);
+			} else if (tag === 26) this._keys.push(pbf.readString());
+			else if (tag === 34) this._values.push(readValueMessage(pbf));
+			else if (tag === 40) this.extent = pbf.readVarint();
+			else if (tag === 120) this.version = pbf.readVarint();
+			else pbf.skip(tag);
+		}
 		this.length = this._features.length;
 	}
 	/** return feature `i` from this layer as a `VectorTileFeature`
@@ -16079,52 +16073,36 @@ var VectorTileLayer = class {
 	}
 };
 /**
-* @param {number} tag
-* @param {VectorTileLayer} layer
-* @param {Pbf} pbf
-*/
-function readLayer(tag, layer, pbf) {
-	if (tag === 15) layer.version = pbf.readVarint();
-	else if (tag === 1) layer.name = pbf.readString();
-	else if (tag === 5) layer.extent = pbf.readVarint();
-	else if (tag === 2) layer._features.push(pbf.pos);
-	else if (tag === 3) layer._keys.push(pbf.readString());
-	else if (tag === 4) layer._values.push(readValueMessage(pbf));
-}
-/**
-* @param {Pbf} pbf
+* @param {PbfReader} pbf
 */
 function readValueMessage(pbf) {
 	let value = null;
 	const end = pbf.readVarint() + pbf.pos;
 	while (pbf.pos < end) {
-		const tag = pbf.readVarint() >> 3;
-		value = tag === 1 ? pbf.readString() : tag === 2 ? pbf.readFloat() : tag === 3 ? pbf.readDouble() : tag === 4 ? pbf.readVarint64() : tag === 5 ? pbf.readVarint() : tag === 6 ? pbf.readSVarint() : tag === 7 ? pbf.readBoolean() : null;
+		const tag = pbf.readVarint();
+		value = tag === 10 ? pbf.readString() : tag === 21 ? pbf.readFloat() : tag === 25 ? pbf.readDouble() : tag === 32 ? pbf.readVarint(true) : tag === 40 ? pbf.readVarint() : tag === 48 ? pbf.readSVarint() : tag === 56 ? pbf.readBoolean() : (pbf.skip(tag), null);
 	}
 	if (value == null) throw new Error("unknown feature value");
 	return value;
 }
 var VectorTile = class {
 	/**
-	* @param {Pbf} pbf
+	* @param {PbfReader} pbf
 	* @param {number} [end]
 	*/
-	constructor(pbf, end) {
+	constructor(pbf, end = pbf.length) {
 		/** @type {Record<string, VectorTileLayer>} */
-		this.layers = pbf.readFields(readTile, {}, end);
+		const layers = Object.create(null);
+		while (pbf.pos < end) {
+			const tag = pbf.readVarint();
+			if (tag === 26) {
+				const layer = new VectorTileLayer(pbf, pbf.readVarint() + pbf.pos);
+				if (layer.length) layers[layer.name] = layer;
+			} else pbf.skip(tag);
+		}
+		this.layers = layers;
 	}
 };
-/**
-* @param {number} tag
-* @param {Record<string, VectorTileLayer>} layers
-* @param {Pbf} pbf
-*/
-function readTile(tag, layers, pbf) {
-	if (tag === 3) {
-		const layer = new VectorTileLayer(pbf, pbf.readVarint() + pbf.pos);
-		if (layer.length) layers[layer.name] = layer;
-	}
-}
 //#endregion
 //#region src/data/bucket/fill_extrusion_bucket.ts
 const EARCUT_MAX_RINGS = 500;
@@ -19560,35 +19538,32 @@ const PBF_VARINT = 0;
 const PBF_FIXED64 = 1;
 const PBF_BYTES = 2;
 const PBF_FIXED32 = 5;
-var Pbf = class {
+var PbfReader = class {
 	/**
-	* @param {Uint8Array | ArrayBuffer} [buf]
+	* @param {Uint8Array | ArrayBuffer} buf
 	*/
-	constructor(buf = new Uint8Array(16)) {
+	constructor(buf) {
 		this.buf = ArrayBuffer.isView(buf) ? buf : new Uint8Array(buf);
 		this.dataView = new DataView(this.buf.buffer);
 		this.pos = 0;
 		this.type = 0;
+		this._valueStart = -1;
 		this.length = this.buf.length;
 	}
 	/**
 	* @template T
-	* @param {(tag: number, result: T, pbf: Pbf) => void} readField
+	* @param {(tag: number, result: T, pbf: PbfReader) => void} readField
 	* @param {T} result
 	* @param {number} [end]
 	*/
 	readFields(readField, result, end = this.length) {
-		while (this.pos < end) {
-			const val = this.readVarint(), tag = val >> 3, startPos = this.pos;
-			this.type = val & 7;
-			readField(tag, result, this);
-			if (this.pos === startPos) this.skip(val);
-		}
+		let field;
+		while (field = this.nextField(end)) readField(field, result, this);
 		return result;
 	}
 	/**
 	* @template T
-	* @param {(tag: number, result: T, pbf: Pbf) => void} readField
+	* @param {(tag: number, result: T, pbf: PbfReader) => void} readField
 	* @param {T} result
 	*/
 	readMessage(readField, result) {
@@ -19629,10 +19604,9 @@ var Pbf = class {
 	*/
 	readVarint(isSigned) {
 		const buf = this.buf;
-		let val, b;
-		b = buf[this.pos++];
-		val = b & 127;
-		if (b < 128) return val;
+		const b0 = buf[this.pos++];
+		if (b0 < 128) return b0;
+		let val = b0 & 127, b;
 		b = buf[this.pos++];
 		val |= (b & 127) << 7;
 		if (b < 128) return val;
@@ -19645,9 +19619,6 @@ var Pbf = class {
 		b = buf[this.pos];
 		val |= (b & 15) << 28;
 		return readVarintRemainder(val, isSigned, this);
-	}
-	readVarint64() {
-		return this.readVarint(true);
 	}
 	readSVarint() {
 		const num = this.readVarint();
@@ -19728,6 +19699,18 @@ var Pbf = class {
 	readPackedEnd() {
 		return this.type === PBF_BYTES ? this.readVarint() + this.pos : this.pos + 1;
 	}
+	/**
+	* Advance to the next field. Returns the field number, or 0 at end-of-message.
+	* @param {number} [end]
+	*/
+	nextField(end = this.length) {
+		if (this.pos === this._valueStart) this.skip(this.type);
+		if (this.pos >= end) return 0;
+		const tag = this.readVarint();
+		this.type = tag & 7;
+		this._valueStart = this.pos;
+		return tag >>> 3;
+	}
 	/** @param {number} val */
 	skip(val) {
 		const type = val & 7;
@@ -19736,6 +19719,17 @@ var Pbf = class {
 		else if (type === PBF_FIXED32) this.pos += 4;
 		else if (type === PBF_FIXED64) this.pos += 8;
 		else throw new Error(`Unimplemented type: ${type}`);
+	}
+};
+var PbfWriter = class {
+	/**
+	* @param {Uint8Array | ArrayBuffer} [buf]
+	*/
+	constructor(buf = new Uint8Array(16)) {
+		this.buf = ArrayBuffer.isView(buf) ? buf : new Uint8Array(buf);
+		this.dataView = new DataView(this.buf.buffer);
+		this.pos = 0;
+		this.length = this.buf.length;
 	}
 	/**
 	* @param {number} tag
@@ -19790,6 +19784,11 @@ var Pbf = class {
 	/** @param {number} val */
 	writeVarint(val) {
 		val = +val || 0;
+		if (val >= 0 && val < 128) {
+			if (this.pos >= this.length) this.realloc(1);
+			this.buf[this.pos++] = val;
+			return;
+		}
 		if (val > 268435455 || val < 0) {
 			writeBigVarint(val, this);
 			return;
@@ -19841,11 +19840,12 @@ var Pbf = class {
 		const len = buffer.length;
 		this.writeVarint(len);
 		this.realloc(len);
-		for (let i = 0; i < len; i++) this.buf[this.pos++] = buffer[i];
+		this.buf.set(buffer, this.pos);
+		this.pos += len;
 	}
 	/**
 	* @template T
-	* @param {(obj: T, pbf: Pbf) => void} fn
+	* @param {(obj: T, pbf: PbfWriter) => void} fn
 	* @param {T} obj
 	*/
 	writeRawMessage(fn, obj) {
@@ -19861,7 +19861,7 @@ var Pbf = class {
 	/**
 	* @template T
 	* @param {number} tag
-	* @param {(obj: T, pbf: Pbf) => void} fn
+	* @param {(obj: T, pbf: PbfWriter) => void} fn
 	* @param {T} obj
 	*/
 	writeMessage(tag, fn, obj) {
@@ -20022,7 +20022,7 @@ var Pbf = class {
 /**
 * @param {number} l
 * @param {boolean | undefined} s
-* @param {Pbf} p
+* @param {PbfReader} p
 */
 function readVarintRemainder(l, s, p) {
 	const buf = p.buf;
@@ -20057,7 +20057,7 @@ function toNum(low, high, isSigned) {
 }
 /**
 * @param {number} val
-* @param {Pbf} pbf
+* @param {PbfWriter} pbf
 */
 function writeBigVarint(val, pbf) {
 	let low, high;
@@ -20081,7 +20081,7 @@ function writeBigVarint(val, pbf) {
 /**
 * @param {number} high
 * @param {number} low
-* @param {Pbf} pbf
+* @param {PbfWriter} pbf
 */
 function writeBigVarintLow(low, high, pbf) {
 	pbf.buf[pbf.pos++] = low & 127 | 128;
@@ -20096,7 +20096,7 @@ function writeBigVarintLow(low, high, pbf) {
 }
 /**
 * @param {number} high
-* @param {Pbf} pbf
+* @param {PbfWriter} pbf
 */
 function writeBigVarintHigh(high, pbf) {
 	const lsb = (high & 7) << 4;
@@ -20115,72 +20115,72 @@ function writeBigVarintHigh(high, pbf) {
 /**
 * @param {number} startPos
 * @param {number} len
-* @param {Pbf} pbf
+* @param {PbfWriter} pbf
 */
 function makeRoomForExtraLength(startPos, len, pbf) {
 	const extraLen = len <= 16383 ? 1 : len <= 2097151 ? 2 : len <= 268435455 ? 3 : Math.floor(Math.log(len) / (Math.LN2 * 7));
 	pbf.realloc(extraLen);
-	for (let i = pbf.pos - 1; i >= startPos; i--) pbf.buf[i + extraLen] = pbf.buf[i];
+	pbf.buf.copyWithin(startPos + extraLen, startPos, pbf.pos);
 }
 /**
 * @param {number[]} arr
-* @param {Pbf} pbf
+* @param {PbfWriter} pbf
 */
 function writePackedVarint(arr, pbf) {
 	for (let i = 0; i < arr.length; i++) pbf.writeVarint(arr[i]);
 }
 /**
 * @param {number[]} arr
-* @param {Pbf} pbf
+* @param {PbfWriter} pbf
 */
 function writePackedSVarint(arr, pbf) {
 	for (let i = 0; i < arr.length; i++) pbf.writeSVarint(arr[i]);
 }
 /**
 * @param {number[]} arr
-* @param {Pbf} pbf
+* @param {PbfWriter} pbf
 */
 function writePackedFloat(arr, pbf) {
 	for (let i = 0; i < arr.length; i++) pbf.writeFloat(arr[i]);
 }
 /**
 * @param {number[]} arr
-* @param {Pbf} pbf
+* @param {PbfWriter} pbf
 */
 function writePackedDouble(arr, pbf) {
 	for (let i = 0; i < arr.length; i++) pbf.writeDouble(arr[i]);
 }
 /**
 * @param {boolean[]} arr
-* @param {Pbf} pbf
+* @param {PbfWriter} pbf
 */
 function writePackedBoolean(arr, pbf) {
 	for (let i = 0; i < arr.length; i++) pbf.writeBoolean(arr[i]);
 }
 /**
 * @param {number[]} arr
-* @param {Pbf} pbf
+* @param {PbfWriter} pbf
 */
 function writePackedFixed32(arr, pbf) {
 	for (let i = 0; i < arr.length; i++) pbf.writeFixed32(arr[i]);
 }
 /**
 * @param {number[]} arr
-* @param {Pbf} pbf
+* @param {PbfWriter} pbf
 */
 function writePackedSFixed32(arr, pbf) {
 	for (let i = 0; i < arr.length; i++) pbf.writeSFixed32(arr[i]);
 }
 /**
 * @param {number[]} arr
-* @param {Pbf} pbf
+* @param {PbfWriter} pbf
 */
 function writePackedFixed64(arr, pbf) {
 	for (let i = 0; i < arr.length; i++) pbf.writeFixed64(arr[i]);
 }
 /**
 * @param {number[]} arr
-* @param {Pbf} pbf
+* @param {PbfWriter} pbf
 */
 function writePackedSFixed64(arr, pbf) {
 	for (let i = 0; i < arr.length; i++) pbf.writeSFixed64(arr[i]);
@@ -21767,7 +21767,7 @@ var GeoJSONWrapper = class {
 * @return uncompressed, pbf-serialized tile data
 */
 function fromVectorTileJs(tile, jsonPrefix = "") {
-	const out = new Pbf();
+	const out = new PbfWriter();
 	writeTile(tile, out, jsonPrefix);
 	return out.finish();
 }
@@ -24098,6 +24098,48 @@ var LengthType;
 })(LengthType || (LengthType = {}));
 //#endregion
 //#region node_modules/@maplibre/mlt/dist/metadata/tile/streamMetadataDecoder.js
+const PHYSICAL_STREAM_TYPE_BY_ID = [
+	PhysicalStreamType.PRESENT,
+	PhysicalStreamType.DATA,
+	PhysicalStreamType.OFFSET,
+	PhysicalStreamType.LENGTH
+];
+const LOGICAL_LEVEL_TECHNIQUE_BY_ID = [
+	LogicalLevelTechnique.NONE,
+	LogicalLevelTechnique.DELTA,
+	LogicalLevelTechnique.COMPONENTWISE_DELTA,
+	LogicalLevelTechnique.RLE,
+	LogicalLevelTechnique.MORTON,
+	LogicalLevelTechnique.PDE
+];
+const PHYSICAL_LEVEL_TECHNIQUE_BY_ID = [
+	PhysicalLevelTechnique.NONE,
+	PhysicalLevelTechnique.FAST_PFOR,
+	PhysicalLevelTechnique.VARINT
+];
+const DICTIONARY_TYPE_BY_ID = [
+	DictionaryType.NONE,
+	DictionaryType.SINGLE,
+	DictionaryType.SHARED,
+	DictionaryType.VERTEX,
+	DictionaryType.MORTON,
+	DictionaryType.FSST
+];
+const OFFSET_TYPE_BY_ID = [
+	OffsetType.VERTEX,
+	OffsetType.INDEX,
+	OffsetType.STRING,
+	OffsetType.KEY
+];
+const LENGTH_TYPE_BY_ID = [
+	LengthType.VAR_BINARY,
+	LengthType.GEOMETRIES,
+	LengthType.PARTS,
+	LengthType.RINGS,
+	LengthType.TRIANGLES,
+	LengthType.SYMBOL,
+	LengthType.DICTIONARY
+];
 function decodeStreamMetadata(tile, offset) {
 	const streamMetadata = decodeStreamMetadataInternal(tile, offset);
 	if (streamMetadata.logicalLevelTechnique1 === LogicalLevelTechnique.MORTON) return decodePartialMortonEncodedStreamMetadata(streamMetadata, tile, offset);
@@ -24136,24 +24178,24 @@ function decodePartialRleEncodedStreamMetadata(streamMetadata, tile, offset) {
 }
 function decodeStreamMetadataInternal(tile, offset) {
 	const stream_type = tile[offset.get()];
-	const physicalStreamType = Object.values(PhysicalStreamType)[stream_type >> 4];
-	let logicalStreamType = null;
+	const physicalStreamType = PHYSICAL_STREAM_TYPE_BY_ID[stream_type >> 4];
+	let logicalStreamType = {};
 	switch (physicalStreamType) {
 		case PhysicalStreamType.DATA:
-			logicalStreamType = { dictionaryType: Object.values(DictionaryType)[stream_type & 15] };
+			logicalStreamType = { dictionaryType: DICTIONARY_TYPE_BY_ID[stream_type & 15] };
 			break;
 		case PhysicalStreamType.OFFSET:
-			logicalStreamType = { offsetType: Object.values(OffsetType)[stream_type & 15] };
+			logicalStreamType = { offsetType: OFFSET_TYPE_BY_ID[stream_type & 15] };
 			break;
 		case PhysicalStreamType.LENGTH:
-			logicalStreamType = { lengthType: Object.values(LengthType)[stream_type & 15] };
+			logicalStreamType = { lengthType: LENGTH_TYPE_BY_ID[stream_type & 15] };
 			break;
 	}
 	offset.increment();
 	const encodings_header = tile[offset.get()];
-	const llt1 = Object.values(LogicalLevelTechnique)[encodings_header >> 5];
-	const llt2 = Object.values(LogicalLevelTechnique)[encodings_header >> 2 & 7];
-	const plt = Object.values(PhysicalLevelTechnique)[encodings_header & 3];
+	const llt1 = LOGICAL_LEVEL_TECHNIQUE_BY_ID[encodings_header >> 5];
+	const llt2 = LOGICAL_LEVEL_TECHNIQUE_BY_ID[encodings_header >> 2 & 7];
+	const plt = PHYSICAL_LEVEL_TECHNIQUE_BY_ID[encodings_header & 3];
 	offset.increment();
 	const sizeInfo = decodeVarintInt32(tile, offset, 2);
 	const numValues = sizeInfo[0];
@@ -26170,7 +26212,7 @@ var FeatureIndex = class {
 				case "mlt":
 					this.vtLayers = new MLTVectorTile(this.rawTileData).layers;
 					break;
-				default: this.vtLayers = new VectorTile(new Pbf(this.rawTileData)).layers;
+				default: this.vtLayers = new VectorTile(new PbfReader(this.rawTileData)).layers;
 			}
 			this.sourceLayerCoder = new DictionaryCoder(this.vtLayers ? Object.keys(this.vtLayers).sort() : [GEOJSON_TILE_LAYER_NAME]);
 		}
@@ -28319,7 +28361,7 @@ var VectorTileWorkerSource = class {
 	loadVectorTile(params, rawData) {
 		try {
 			return {
-				vectorTile: params.encoding !== "mlt" ? new VectorTile(new Pbf(rawData)) : new MLTVectorTile(rawData),
+				vectorTile: params.encoding !== "mlt" ? new VectorTile(new PbfReader(rawData)) : new MLTVectorTile(rawData),
 				rawData
 			};
 		} catch (ex) {
@@ -28382,9 +28424,10 @@ var VectorTileWorkerSource = class {
 		let result = await workerTile.parse(workerTile.vectorTile, this.layerIndex, this.availableImages, this.actor, params.subdivisionGranularity);
 		if (parseState) {
 			const { rawData, cacheControl, resourceTiming } = parseState;
+			const encoding = params.overzoomParameters ? "mvt" : params.encoding;
 			result = extend({
 				rawTileData: rawData.slice(0),
-				encoding: params.encoding
+				encoding
 			}, result, cacheControl, resourceTiming);
 		}
 		return result;
