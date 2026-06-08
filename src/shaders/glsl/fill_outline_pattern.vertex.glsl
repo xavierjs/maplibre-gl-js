@@ -4,7 +4,7 @@ uniform vec2 u_pixel_coord_lower;
 uniform vec3 u_scale;
 uniform vec2 u_fill_translate;
 
-in vec2 a_pos;
+layout(location = 0) in vec2 a_pos;
 
 out vec2 v_pos_a;
 out vec2 v_pos_b;
@@ -25,6 +25,12 @@ void main() {
     #pragma mapbox: initialize mediump vec4 pattern_to
     #pragma mapbox: initialize lowp float pixel_ratio_from
     #pragma mapbox: initialize lowp float pixel_ratio_to
+
+    // Move vertex outside clip space to discard triangle when opacity is negligible
+    if (opacity < 0.01) {
+        gl_Position = vec4(-2.0, -2.0, -2.0, 1.0);
+        return;
+    }
 
     vec2 pattern_tl_a = pattern_from.xy;
     vec2 pattern_br_a = pattern_from.zw;

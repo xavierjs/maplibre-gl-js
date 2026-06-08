@@ -1,8 +1,8 @@
-in vec4 a_pos_offset;
-in vec4 a_data;
-in vec4 a_pixeloffset;
-in vec3 a_projected_pos;
-in float a_fade_opacity;
+layout(location = 0) in vec4 a_pos_offset;
+layout(location = 1) in vec4 a_data;
+layout(location = 2) in vec4 a_pixeloffset;
+layout(location = 3) in vec3 a_projected_pos;
+layout(location = 4) in float a_fade_opacity;
 
 // contents of a_size vary based on the type of property value
 // used for {text,icon}-size.
@@ -77,6 +77,7 @@ void main() {
     float fade_change = fade_opacity[1] > 0.5 ? u_fade_change : -u_fade_change;
     float interpolated_fade_opacity = max(0.0, min(visibility, fade_opacity[0] + fade_change));
 
+    // Move vertex outside clip space to discard triangle when opacity is negligible
     float total_opacity = opacity * interpolated_fade_opacity;
     if (total_opacity < 0.1){
         gl_Position = vec4(-2., -2., -2., 1.);
